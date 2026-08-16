@@ -1,0 +1,16 @@
+line-length = 180
+
+[lint]
+ignore = ["ANN401", "D105", "E501", "G003", "G004", "PLC1802", "PLR2004", "PLR0912", "PLR0913", "SIM108", "G004"]
+select = ["A", "ANN", "ARG", "ASYNC", "B", "C4", "D", "E", "EM", "ERA", "F", "FURB", "FLY", "G", "I", "ICN002", "ICN003", "LOG", "N801", "N802", "N804", "N805", "NPY", "PIE", "PL", "PTH", "PYI", "RET", "RUF", "SIM", "SLF", "TRY", "T20", "UP", "W"]
+
+[lint.flake8-import-conventions]
+banned-from = ["numpy", "scipy"]
+
+[lint.pydocstyle]
+convention = "numpy"
+
+[lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"setup.py" = ["D100"]
+"test*.py" = ["T201"]
