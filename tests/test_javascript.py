@@ -112,6 +112,16 @@ class JavaScriptWrapperTest(unittest.TestCase):
         self.assertIn("Transient solve failed at t=${time + stepSize}", wrapper)
         self.assertIn("Newton iteration did not converge at t=${time + stepSize}", wrapper)
 
+    def test_tolerance_options_are_validated_and_forwarded(self) -> None:
+        """IC, transient Newton, and adaptive control share explicit options."""
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+
+        self.assertIn("residualTolerance must be positive and finite", wrapper)
+        self.assertIn("relativeTolerance must be positive and finite", wrapper)
+        self.assertIn("voltageAbsoluteTolerance must be positive and finite", wrapper)
+        self.assertIn("currentAbsoluteTolerance must be positive and finite", wrapper)
+        self.assertIn("...stepOptions", wrapper)
+
     def test_wrapper_can_collect_columnar_results(self) -> None:
         """Plotting output uses contiguous typed arrays instead of snapshot objects."""
         wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
@@ -123,6 +133,46 @@ class JavaScriptWrapperTest(unittest.TestCase):
         self.assertIn("states.set(this.vectors.state", wrapper)
         self.assertIn("times.subarray(0, sampleCount)", wrapper)
         self.assertIn("const targetTime = Math.min", wrapper)
+
+    def test_adaptive_wrapper_uses_step_doubling_without_resampling(self) -> None:
+        """Adaptive output contains accepted endpoints at their actual times."""
+        node = shutil.which("node")
+        if node is None:
+            message = "Node.js is required to execute JavaScript tests"
+            raise unittest.SkipTest(message)
+
+        system = _rc_system()
+        module = antispice.generate_wasm_radau_solver(system)
+        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        self.assertIn("Math.sqrt(minimumStepSize * maximumStepSize)", wrapper)
+        runner = """
+import fs from "node:fs";
+import {AntispiceSolver} from "./wrapper.mjs";
+const solver = await AntispiceSolver.instantiate(fs.readFileSync("solver.wasm"));
+solver.initializeOperatingPoint(0);
+const result = solver.integrateAdaptiveArrays({
+  startTime: 0,
+  endTime: 0.01,
+  minimumStepSize: 1e-7,
+  maximumStepSize: 1e-3,
+  relativeTolerance: 1e-5,
+});
+if (result.times[0] !== 0 || result.times.at(-1) !== 0.01) process.exit(1);
+if (!(result.acceptedSteps > 0) || result.sampleCount !== result.acceptedSteps + 1) process.exit(2);
+let unequal = false;
+for (let i = 2; i < result.sampleCount; ++i) {
+  const previous = result.times[i - 1] - result.times[i - 2];
+  const current = result.times[i] - result.times[i - 1];
+  if (Math.abs(previous - current) > 1e-15) unequal = true;
+}
+if (!unequal) process.exit(3);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)
+            (path / "solver.wasm").write_bytes(module)
+            (path / "wrapper.mjs").write_text(wrapper)
+            (path / "runner.mjs").write_text(runner)
+            subprocess.run([node, "runner.mjs"], cwd=path, check=True)
 
     def test_structured_and_flat_views_alias_and_integrate(self) -> None:
         node = shutil.which("node")

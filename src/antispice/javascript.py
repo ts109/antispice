@@ -58,6 +58,7 @@ const FUNCTION_NAME = __FUNCTION_NAME__;
 const STATE_SIZE = __STATE_SIZE__;
 const POTENTIAL_INDICES = Object.freeze(__POTENTIALS__);
 const CURRENT_INDICES = Object.freeze(__CURRENTS__);
+const POTENTIAL_COUNT = Object.keys(POTENTIAL_INDICES).length;
 const OFFSETS = Object.freeze({
   stageDerivatives: __STAGE_DERIVATIVES__,
   state: __PREVIOUS_STATE__,
@@ -191,6 +192,9 @@ export class __CLASS_NAME__ {
     this._operatingCorrection = new Float64Array(STATE_SIZE);
     this._transientPreviousStage = new Float64Array(2 * STATE_SIZE);
     this._transientCorrection = new Float64Array(2 * STATE_SIZE);
+    this._adaptiveInitialState = new Float64Array(STATE_SIZE);
+    this._adaptiveInitialStage = new Float64Array(2 * STATE_SIZE);
+    this._adaptiveFullState = new Float64Array(STATE_SIZE);
     this._newtonResult = {error: 0, scale: 0, residualNorm: 0};
     this._refreshViews();
     this.state = new CircuitStateView(this);
@@ -222,6 +226,7 @@ export class __CLASS_NAME__ {
       minimumStepMultiplier = 2 ** -20,
     } = options;
     if (!Number.isFinite(time)) throw new RangeError("Operating-point time must be finite");
+    if (!Number.isFinite(residualTolerance) || !(residualTolerance > 0)) throw new RangeError("residualTolerance must be positive and finite");
     this._refreshViews();
     const residualNorm = () => {
       let norm = 0;
@@ -384,8 +389,6 @@ export class __CLASS_NAME__ {
   step(time, stepSize, options = {}) {
     const {
       maxIterations = 20,
-      absoluteTolerance = 1e-10,
-      relativeTolerance = 1e-8,
       requireConvergence = true,
       pivotTolerance = 1e-14,
       residualTolerance = 1e-10,
@@ -395,6 +398,7 @@ export class __CLASS_NAME__ {
     if (!Number.isInteger(maxIterations) || maxIterations < 1) {
       throw new RangeError("maxIterations must be a positive integer");
     }
+    if (!Number.isFinite(residualTolerance) || !(residualTolerance > 0)) throw new RangeError("residualTolerance must be positive and finite");
 
     let error = Infinity;
     let scale = 0;
@@ -436,6 +440,127 @@ export class __CLASS_NAME__ {
     }
     this.vectors.state.set(this.vectors.nextState);
     return {time: time + stepSize, iterations, converged, error, scale};
+  }
+
+  adaptiveStep(time, stepSize, options = {}) {
+    const {
+      relativeTolerance = 1e-4,
+      voltageAbsoluteTolerance = 1e-7,
+      currentAbsoluteTolerance = 1e-10,
+      ...stepOptions
+    } = options;
+    if (!Number.isFinite(relativeTolerance) || !(relativeTolerance > 0)) throw new RangeError("relativeTolerance must be positive and finite");
+    if (!Number.isFinite(voltageAbsoluteTolerance) || !(voltageAbsoluteTolerance > 0)) throw new RangeError("voltageAbsoluteTolerance must be positive and finite");
+    if (!Number.isFinite(currentAbsoluteTolerance) || !(currentAbsoluteTolerance > 0)) throw new RangeError("currentAbsoluteTolerance must be positive and finite");
+
+    const initialState = this._adaptiveInitialState;
+    const initialStage = this._adaptiveInitialStage;
+    const fullState = this._adaptiveFullState;
+    initialState.set(this.vectors.state);
+    initialStage.set(this.vectors.stageDerivatives);
+    const restore = () => {
+      this.vectors.state.set(initialState);
+      this.vectors.stageDerivatives.set(initialStage);
+    };
+
+    try {
+      this.step(time, stepSize, stepOptions);
+      fullState.set(this.vectors.state);
+      restore();
+      const halfStep = stepSize / 2;
+      this.step(time, halfStep, stepOptions);
+      this.step(time + halfStep, halfStep, stepOptions);
+    } catch (failure) {
+      restore();
+      return {accepted: false, errorNorm: Infinity, suggestedStep: stepSize * 0.25, failure};
+    }
+
+    let errorNorm = 0;
+    for (let index = 0; index < STATE_SIZE; ++index) {
+      const absoluteTolerance = index < POTENTIAL_COUNT ? voltageAbsoluteTolerance : currentAbsoluteTolerance;
+      const scale = absoluteTolerance + relativeTolerance * Math.max(Math.abs(initialState[index]), Math.abs(this.vectors.state[index]));
+      errorNorm = Math.max(errorNorm, Math.abs(this.vectors.state[index] - fullState[index]) / (7 * scale));
+    }
+    const factor = errorNorm === 0 ? 5 : Math.max(0.2, Math.min(5, 0.9 * errorNorm ** -0.25));
+    if (!(errorNorm <= 1)) {
+      restore();
+      return {accepted: false, errorNorm, suggestedStep: stepSize * Math.min(0.9, factor), failure: null};
+    }
+    return {
+      accepted: true,
+      errorNorm,
+      suggestedStep: stepSize * factor,
+      endTime: time + stepSize,
+    };
+  }
+
+  integrateAdaptiveArrays(options) {
+    const {
+      startTime,
+      endTime,
+      minimumStepSize,
+      maximumStepSize,
+      includeInitial = true,
+      ...adaptiveOptions
+    } = options;
+    if (!(endTime >= startTime)) throw new RangeError("endTime must not precede startTime");
+    if (!Number.isFinite(minimumStepSize) || !(minimumStepSize > 0)) throw new RangeError("minimumStepSize must be positive and finite");
+    if (!Number.isFinite(maximumStepSize) || !(maximumStepSize >= minimumStepSize)) throw new RangeError("maximumStepSize must be finite and not smaller than minimumStepSize");
+
+    let capacity = 256;
+    let times = new Float64Array(capacity);
+    let states = new Float64Array(capacity * STATE_SIZE);
+    let sampleCount = 0;
+    const reserve = required => {
+      if (required <= capacity) return;
+      while (capacity < required) capacity *= 2;
+      const grownTimes = new Float64Array(capacity);
+      const grownStates = new Float64Array(capacity * STATE_SIZE);
+      grownTimes.set(times.subarray(0, sampleCount));
+      grownStates.set(states.subarray(0, sampleCount * STATE_SIZE));
+      times = grownTimes;
+      states = grownStates;
+    };
+    const record = (time, state = this.vectors.state) => {
+      reserve(sampleCount + 1);
+      times[sampleCount] = time;
+      states.set(state, sampleCount * STATE_SIZE);
+      ++sampleCount;
+    };
+
+    let time = startTime;
+    let stepSize = Math.sqrt(minimumStepSize * maximumStepSize);
+    let acceptedSteps = 0;
+    let rejectedSteps = 0;
+    if (includeInitial) record(time);
+    while (time < endTime) {
+      const remaining = endTime - time;
+      const trialStep = Math.min(stepSize, maximumStepSize, remaining);
+      if (!(trialStep > 0)) break;
+      const result = this.adaptiveStep(time, trialStep, adaptiveOptions);
+      if (!result.accepted) {
+        ++rejectedSteps;
+        const nextStep = Math.max(minimumStepSize, result.suggestedStep);
+        if (trialStep <= minimumStepSize * (1 + 16 * Number.EPSILON) || remaining < minimumStepSize) {
+          const reason = result.failure ? `: ${result.failure.message}` : ` (estimated error ${result.errorNorm})`;
+          throw new Error(`Adaptive integration failed at t=${time}; minimum step size ${minimumStepSize} is insufficient${reason}`, {cause: result.failure ?? undefined});
+        }
+        stepSize = nextStep;
+        continue;
+      }
+      record(result.endTime);
+      time = result.endTime;
+      ++acceptedSteps;
+      stepSize = Math.max(minimumStepSize, Math.min(maximumStepSize, result.suggestedStep));
+    }
+    return {
+      times: times.subarray(0, sampleCount),
+      states: states.subarray(0, sampleCount * STATE_SIZE),
+      sampleCount,
+      stateSize: STATE_SIZE,
+      acceptedSteps,
+      rejectedSteps,
+    };
   }
 
   *integrate(options) {
