@@ -1,0 +1,34 @@
+format = 1
+
+[diode-shockley]
+ports = ["K", "A"]
+parameters = ["saturation_current", "emission_coefficient", "thermal_voltage"]
+equations = ["I_A - saturation_current * (exp(U_A / (emission_coefficient * thermal_voltage)) - 1)"]
+
+[bjt-ebers-moll]
+ports = ["E", "B", "C"]
+parameters = ["polarity", "saturation_current", "forward_beta", "reverse_beta", "thermal_voltage"]
+equations = [
+  "I_B - polarity * (i_forward / (forward_beta + 1) + i_reverse / (reverse_beta + 1))",
+  "I_C - polarity * (forward_beta / (forward_beta + 1) * i_forward - i_reverse)",
+]
+
+[bjt-ebers-moll.auxiliaries]
+v_be = "polarity * U_B"
+v_bc = "polarity * (U_B - U_C)"
+i_forward = "saturation_current * (exp(v_be / thermal_voltage) - 1)"
+i_reverse = "saturation_current * (exp(v_bc / thermal_voltage) - 1)"
+
+[fet-shichman-hodges]
+ports = ["S", "G", "D"]
+parameters = ["polarity", "threshold_voltage", "transconductance", "channel_length_modulation"]
+equations = [
+  "I_G",
+  "I_D - polarity * channel_current * (1 + channel_length_modulation * v_ds)",
+]
+
+[fet-shichman-hodges.auxiliaries]
+v_gs = "polarity * U_G"
+v_ds = "polarity * U_D"
+overdrive = "v_gs - threshold_voltage"
+channel_current = "where(v_gs <= threshold_voltage, 0, where(v_ds < overdrive, transconductance * (overdrive * v_ds - v_ds ** 2 / 2), transconductance * overdrive ** 2 / 2))"

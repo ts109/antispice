@@ -1,0 +1,11 @@
+format = 1
+
+[voltage-source]
+ports = ["ref", "p"]
+parameters = ["voltage"]
+equations = ["U_p - voltage"]
+
+[current-source]
+ports = ["ref", "p"]
+parameters = ["current"]
+equations = ["I_p - current"]

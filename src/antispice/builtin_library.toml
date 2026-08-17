@@ -1,0 +1,9 @@
+format = 1
+
+include = [
+  "library/models/passive.toml",
+  "library/models/sources.toml",
+  "library/models/semiconductor.toml",
+  "library/parts/diodes.toml",
+  "library/parts/transistors.toml",
+]

@@ -14,7 +14,7 @@ def make_rc_step_circuit() -> antispice.Circuit:
     return antispice.Circuit(
         elements={
             "V1": antispice.Element(
-                use="voltage_source",
+                use="voltage-source",
                 nodes=("0", "input"),
                 parameters={"voltage": "where(t > 0, 1, 0)"},
             ),
@@ -33,6 +33,82 @@ def make_rc_step_circuit() -> antispice.Circuit:
 
 
 class CircuitCompilerTest(unittest.TestCase):
+    def test_auxiliary_symbols_are_resolved_and_eliminated(self) -> None:
+        model = antispice.Model(
+            ports=("ref", "p"),
+            parameters=("gain",),
+            equations=("I_p - output",),
+            auxiliaries={
+                "output": "gain * squared",
+                "squared": "U_p ** 2",
+            },
+        )
+        system = antispice.compile_circuit(antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "n"), {"gain": 3})}))
+
+        equation = str(system.equations[-1])
+        self.assertNotIn("output", equation)
+        self.assertNotIn("squared", equation)
+        self.assertIn("Phi_n**2", equation)
+        self.assertEqual(len(system.state), 2)
+
+    def test_invalid_auxiliary_symbols_are_rejected(self) -> None:
+        for auxiliaries, message in (
+            ({"a": "b", "b": "a"}, "unresolved or cyclic"),
+            ({"U_p": "2 * U_p"}, "collide"),
+        ):
+            with self.subTest(auxiliaries=auxiliaries):
+                model = antispice.Model(
+                    ports=("ref", "p"),
+                    parameters=(),
+                    equations=("I_p",),
+                    auxiliaries=auxiliaries,
+                )
+                circuit = antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "n"))})
+
+                with self.assertRaisesRegex(ValueError, message):
+                    antispice.compile_circuit(circuit)
+
+    def test_builtin_transistor_equations_compile_for_both_polarities(self) -> None:
+        for polarity in (-1, 1):
+            with self.subTest(device="bjt", polarity=polarity):
+                system = antispice.compile_circuit(
+                    antispice.Circuit(
+                        elements={
+                            "Q1": antispice.Element(
+                                "bjt-ebers-moll",
+                                ("0", "base", "collector"),
+                                {
+                                    "polarity": polarity,
+                                    "saturation_current": 1e-15,
+                                    "forward_beta": 100,
+                                    "reverse_beta": 1,
+                                    "thermal_voltage": 0.02585,
+                                },
+                            )
+                        }
+                    )
+                )
+                self.assertEqual(len(system.equations), len(system.state))
+
+            with self.subTest(device="fet", polarity=polarity):
+                system = antispice.compile_circuit(
+                    antispice.Circuit(
+                        elements={
+                            "M1": antispice.Element(
+                                "fet-shichman-hodges",
+                                ("0", "gate", "drain"),
+                                {
+                                    "polarity": polarity,
+                                    "threshold_voltage": 1,
+                                    "transconductance": 0.01,
+                                    "channel_length_modulation": 0.01,
+                                },
+                            )
+                        }
+                    )
+                )
+                self.assertEqual(len(system.equations), len(system.state))
+
     def test_compiler_creates_deterministic_state_layout(self) -> None:
         system = antispice.compile_circuit(make_rc_step_circuit())
 

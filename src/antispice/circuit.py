@@ -6,9 +6,9 @@ until a later compiler turns them into symbolic expressions.
 """
 
 import dataclasses
-import json
+import tomllib
 from importlib import resources
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 type Expression = str | int | float
@@ -20,13 +20,16 @@ class Model:
     """Constitutive equations and their parameter names.
 
     The first port is the reference port.  Every other port ``p`` has the
-    canonical variables ``U_p``, ``I_p``, ``Udot_p``, and ``Idot_p``.  A model
-    with ``n`` ports must provide exactly ``n - 1`` equations.
+    canonical variables ``U_p``, ``I_p``, ``Udot_p``, and ``Idot_p``. Auxiliary
+    expressions are local shorthand substituted into the equations; they do
+    not add state variables. A model with ``n`` ports must provide exactly
+    ``n - 1`` equations.
     """
 
     ports: tuple[str, ...]
     parameters: tuple[str, ...]
     equations: tuple[str, ...]
+    auxiliaries: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if len(self.ports) < 2:
@@ -157,45 +160,111 @@ class Circuit:
             raise ValueError(f"{subject} is missing model parameters: {names}")
 
 
-BUILTIN_LIBRARY_FILENAME = "builtin_library.json"
+BUILTIN_LIBRARY_FILENAME = "builtin_library.toml"
 
 
 def _decode_definition(name: str, value: Any) -> Definition:
     if not isinstance(value, dict):
-        raise ValueError(f"built-in definition {name!r} must be an object")
+        raise ValueError(f"library definition {name!r} must be a table")
 
-    match value.get("type"):
-        case "model":
-            try:
-                return Model(
-                    ports=tuple(value["ports"]),
-                    parameters=tuple(value["parameters"]),
-                    equations=tuple(value["equations"]),
-                )
-            except KeyError as error:
-                raise ValueError(f"built-in model {name!r} is missing {error.args[0]!r}") from error
-        case "part":
-            try:
-                return Part(model=value["model"], parameters=dict(value["parameters"]))
-            except KeyError as error:
-                raise ValueError(f"built-in part {name!r} is missing {error.args[0]!r}") from error
-        case kind:
-            raise ValueError(f"built-in definition {name!r} has unknown type {kind!r}")
+    keys = set(value)
+    if "model" in keys:
+        expected = {"model", "parameters"}
+        if keys != expected:
+            raise ValueError(_shape_error(name, "part", keys, expected))
+        if not isinstance(value["model"], str):
+            raise ValueError(f"library part {name!r} must reference its model by name")
+        if not isinstance(value["parameters"], dict):
+            raise ValueError(f"library part {name!r} parameters must be a table")
+        return Part(model=value["model"], parameters=dict(value["parameters"]))
+
+    expected = {"ports", "parameters", "equations"}
+    allowed = expected | {"auxiliaries"}
+    if not keys <= allowed or not expected <= keys:
+        raise ValueError(_shape_error(name, "model", keys, expected, allowed))
+    if not isinstance(value["parameters"], list):
+        raise ValueError(f"library model {name!r} parameters must be an array")
+    if not isinstance(value.get("auxiliaries", {}), dict):
+        raise ValueError(f"library model {name!r} auxiliaries must be a table")
+    return Model(
+        ports=tuple(value["ports"]),
+        parameters=tuple(value["parameters"]),
+        equations=tuple(value["equations"]),
+        auxiliaries=dict(value.get("auxiliaries", {})),
+    )
+
+
+def _shape_error(
+    name: str,
+    kind: str,
+    actual: set[str],
+    required: set[str],
+    allowed: set[str] | None = None,
+) -> str:
+    missing = required - actual
+    unknown = actual - (allowed or required)
+    details = []
+    if missing:
+        details.append(f"missing {', '.join(sorted(missing))}")
+    if unknown:
+        details.append(f"unknown {', '.join(sorted(unknown))}")
+    return f"library {kind} {name!r} has invalid fields: {'; '.join(details)}"
+
+
+def _load_library(root: Any, filename: str = BUILTIN_LIBRARY_FILENAME) -> dict[str, Definition]:
+    return _load_library_file(root, PurePosixPath(filename), ())
+
+
+def _load_library_file(
+    root: Any,
+    filename: PurePosixPath,
+    stack: tuple[PurePosixPath, ...],
+) -> dict[str, Definition]:
+    if filename in stack:
+        chain = " -> ".join(map(str, (*stack, filename)))
+        raise ValueError(f"cyclic library include: {chain}")
+
+    location = root.joinpath(*filename.parts)
+    try:
+        with location.open("rb") as source:
+            encoded = tomllib.load(source)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        chain = " -> ".join(map(str, (*stack, filename)))
+        raise ValueError(f"cannot load library file {filename}: {error}; include chain: {chain}") from error
+
+    version = encoded.pop("format", 1)
+    if version != 1:
+        raise ValueError(f"library file {filename} has unsupported format {version!r}")
+    includes = encoded.pop("include", [])
+    if not isinstance(includes, list) or not all(isinstance(include, str) for include in includes):
+        raise ValueError(f"library file {filename} include must be an array of paths")
+
+    library: dict[str, Definition] = {}
+    for include in includes:
+        relative = PurePosixPath(include)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError(f"library file {filename} has invalid include path {include!r}")
+        child = filename.parent.joinpath(relative)
+        _merge_library(library, _load_library_file(root, child, (*stack, filename)), child)
+
+    definitions = {name: _decode_definition(name, value) for name, value in encoded.items()}
+    _merge_library(library, definitions, filename)
+    return library
+
+
+def _merge_library(target: dict[str, Definition], source: dict[str, Definition], filename: PurePosixPath) -> None:
+    duplicate = target.keys() & source.keys()
+    if duplicate:
+        names = ", ".join(sorted(duplicate))
+        raise ValueError(f"duplicate library definitions while including {filename}: {names}")
+    target.update(source)
 
 
 def _load_builtin_library() -> dict[str, Definition]:
     override = Path.cwd() / BUILTIN_LIBRARY_FILENAME
     if override.is_file():
-        with override.open(encoding="utf-8") as source:
-            encoded = json.load(source)
-    else:
-        resource = resources.files(__package__).joinpath(BUILTIN_LIBRARY_FILENAME)
-        with resource.open(encoding="utf-8") as source:
-            encoded = json.load(source)
-
-    if not isinstance(encoded, dict):
-        raise ValueError("the built-in library must be a JSON object")
-    return {name: _decode_definition(name, value) for name, value in encoded.items()}
+        return _load_library(Path.cwd())
+    return _load_library(resources.files(__package__))
 
 
 BUILTIN_LIBRARY: dict[str, Definition] = _load_builtin_library()

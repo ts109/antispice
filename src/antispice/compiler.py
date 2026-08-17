@@ -126,7 +126,7 @@ def compile_circuit(circuit: Circuit) -> EquationSystem:
     )
 
     time = wrenfold.sym.symbol("t")
-    kcl = {node: wrenfold.sym.zero for node in potentials}
+    kcl = dict.fromkeys(potentials, wrenfold.sym.zero)
     constitutive_equations: list[SymbolicExpression] = []
 
     for element_name, element in circuit.elements.items():
@@ -156,6 +156,14 @@ def compile_circuit(circuit: Circuit) -> EquationSystem:
 
         if reference_net != REFERENCE_NODE:
             kcl[reference_net] += reference_current
+
+        environment.update(
+            _compile_auxiliaries(
+                model.auxiliaries,
+                environment=environment,
+                element_name=element_name,
+            )
+        )
 
         for equation in model.equations:
             constitutive_equations.append(
@@ -353,6 +361,41 @@ def _compile_parameters(
         if not progressed:
             names = ", ".join(sorted(pending))
             raise ValueError(f"unresolved or cyclic parameters on element {element_name!r}: {names}")
+
+    return compiled
+
+
+def _compile_auxiliaries(
+    auxiliaries: dict[str, str],
+    *,
+    environment: dict[str, Expression | SymbolicExpression],
+    element_name: str,
+) -> dict[str, SymbolicExpression]:
+    """Compile model-local expressions, resolving dependencies by substitution."""
+    collisions = auxiliaries.keys() & environment.keys()
+    if collisions:
+        names = ", ".join(sorted(collisions))
+        raise ValueError(f"auxiliary symbols collide with existing names on element {element_name!r}: {names}")
+
+    compiled: dict[str, SymbolicExpression] = {}
+    pending = dict(auxiliaries)
+    while pending:
+        progressed = False
+        for name, expression in tuple(pending.items()):
+            try:
+                compiled[name] = _parse_expression(
+                    expression,
+                    {**environment, **compiled},
+                    context=f"auxiliary symbol {name!r} of element {element_name!r}",
+                )
+            except _UnknownName:
+                continue
+            del pending[name]
+            progressed = True
+
+        if not progressed:
+            names = ", ".join(sorted(pending))
+            raise ValueError(f"unresolved or cyclic auxiliary symbols on element {element_name!r}: {names}")
 
     return compiled
 

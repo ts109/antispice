@@ -1,7 +1,5 @@
 """Tests for the public circuit data model."""
 
-import json
-import os
 import tempfile
 import unittest
 from unittest import mock
@@ -33,6 +31,16 @@ class ModelTest(unittest.TestCase):
                 parameters=("value", "value"),
                 equations=("U_p - value",),
             )
+
+    def test_auxiliaries_are_model_local_expressions(self) -> None:
+        model = antispice.Model(
+            ports=("ref", "p"),
+            parameters=("gain",),
+            equations=("I_p - scaled_voltage",),
+            auxiliaries={"scaled_voltage": "gain * U_p"},
+        )
+
+        self.assertEqual(model.auxiliaries, {"scaled_voltage": "gain * U_p"})
 
 
 class CircuitResolutionTest(unittest.TestCase):
@@ -152,23 +160,75 @@ class BuiltinLibraryTest(unittest.TestCase):
 
         self.assertEqual(library, antispice.BUILTIN_LIBRARY)
 
+    def test_transistor_models_use_signed_polarity(self) -> None:
+        bjt = antispice.BUILTIN_LIBRARY["bjt-ebers-moll"]
+        fet = antispice.BUILTIN_LIBRARY["fet-shichman-hodges"]
+
+        self.assertIsInstance(bjt, antispice.Model)
+        self.assertEqual(bjt.ports, ("E", "B", "C"))
+        self.assertIn("polarity", bjt.parameters)
+        self.assertEqual(set(bjt.auxiliaries), {"v_be", "v_bc", "i_forward", "i_reverse"})
+        self.assertIsInstance(fet, antispice.Model)
+        self.assertEqual(fet.ports, ("S", "G", "D"))
+        self.assertIn("polarity", fet.parameters)
+        self.assertEqual(set(fet.auxiliaries), {"v_gs", "v_ds", "overdrive", "channel_current"})
+
+    def test_packaged_parts_bind_complete_models(self) -> None:
+        for name in ("1n4148", "2n3904", "2n3906"):
+            with self.subTest(name=name):
+                definition = antispice.BUILTIN_LIBRARY[name]
+                self.assertIsInstance(definition, antispice.Part)
+                circuit = antispice.Circuit(elements={"X1": antispice.Element(name, tuple("0" for _ in circuit_module.BUILTIN_LIBRARY[definition.model].ports))})
+                circuit.validate()
+
     def test_library_in_current_directory_overrides_packaged_library(self) -> None:
-        encoded = {
-            "wire": {
-                "type": "model",
-                "ports": ["ref", "p"],
-                "parameters": [],
-                "equations": ["U_p"],
-            }
-        }
         with tempfile.TemporaryDirectory() as directory:
-            filename = os.path.join(directory, circuit_module.BUILTIN_LIBRARY_FILENAME)
-            with open(filename, "w", encoding="utf-8") as destination:
-                json.dump(encoded, destination)
+            filename = circuit_module.Path(directory) / circuit_module.BUILTIN_LIBRARY_FILENAME
+            filename.write_text('[wire]\nports = ["ref", "p"]\nparameters = []\nequations = ["U_p"]\n', encoding="utf-8")
             with mock.patch.object(circuit_module.Path, "cwd", return_value=circuit_module.Path(directory)):
                 library = circuit_module._load_builtin_library()
 
         self.assertEqual(library, {"wire": antispice.Model(("ref", "p"), (), ("U_p",))})
+
+    def test_includes_are_relative_and_recursive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = circuit_module.Path(directory)
+            (root / "models").mkdir()
+            (root / "parts").mkdir()
+            (root / "library.toml").write_text('include = ["models/basic.toml", "parts/common.toml"]\n', encoding="utf-8")
+            (root / "models/basic.toml").write_text('[wire]\nports = ["ref", "p"]\nparameters = []\nequations = ["U_p"]\n', encoding="utf-8")
+            (root / "parts/common.toml").write_text('include = ["../invalid.toml"]\n', encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "invalid include path"):
+                circuit_module._load_library(root, "library.toml")
+
+            (root / "parts/common.toml").write_text('[jumper]\nmodel = "wire"\n[jumper.parameters]\n', encoding="utf-8")
+            library = circuit_module._load_library(root, "library.toml")
+
+        self.assertEqual(set(library), {"wire", "jumper"})
+        self.assertEqual(library["jumper"], antispice.Part("wire", {}))
+
+    def test_include_cycles_and_duplicate_definitions_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = circuit_module.Path(directory)
+            (root / "a.toml").write_text('include = ["b.toml"]\n', encoding="utf-8")
+            (root / "b.toml").write_text('include = ["a.toml"]\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "cyclic.*a.toml -> b.toml -> a.toml"):
+                circuit_module._load_library(root, "a.toml")
+
+            definition = '[wire]\nports = ["ref", "p"]\nparameters = []\nequations = ["U_p"]\n'
+            (root / "a.toml").write_text('include = ["b.toml", "c.toml"]\n', encoding="utf-8")
+            (root / "b.toml").write_text(definition, encoding="utf-8")
+            (root / "c.toml").write_text(definition, encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate.*wire"):
+                circuit_module._load_library(root, "a.toml")
+
+    def test_definition_kind_is_inferred_strictly(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid fields.*unknown typo"):
+            circuit_module._decode_definition(
+                "broken",
+                {"ports": ["ref", "p"], "parameters": [], "equations": ["U_p"], "typo": True},
+            )
 
 
 if __name__ == "__main__":

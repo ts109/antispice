@@ -102,7 +102,7 @@ class WasmRadauTest(unittest.TestCase):
         circuit = antispice.Circuit(
             elements={
                 "V1": antispice.Element(
-                    "voltage_source",
+                    "voltage-source",
                     ("0", "input"),
                     {"voltage": "where(t > 0, 1, 0)"},
                 ),

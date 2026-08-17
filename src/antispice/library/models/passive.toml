@@ -1,0 +1,16 @@
+format = 1
+
+[resistor]
+ports = ["ref", "p"]
+parameters = ["resistance"]
+equations = ["U_p - resistance * I_p"]
+
+[capacitor]
+ports = ["ref", "p"]
+parameters = ["capacitance"]
+equations = ["I_p - capacitance * Udot_p"]
+
+[inductor]
+ports = ["ref", "p"]
+parameters = ["inductance"]
+equations = ["U_p - inductance * Idot_p"]
