@@ -121,9 +121,7 @@ class WasmGenerator(wrenfold.BaseGenerator):
         export_entries = [
             _name("memory") + b"\x02" + _unsigned(0),
             *(
-                _name(function.abi.name if isinstance(function, NativeWasmFunction) else function.signature.name)
-                + b"\x00"
-                + _unsigned(len(imports) + index)
+                _name(function.abi.name if isinstance(function, NativeWasmFunction) else function.signature.name) + b"\x00" + _unsigned(len(imports) + index)
                 for index, function in enumerate(definitions)
             ),
         ]

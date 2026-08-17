@@ -187,6 +187,11 @@ export class __CLASS_NAME__ {
     }
     this._buffer = null;
     this.vectors = null;
+    this._operatingPreviousState = new Float64Array(STATE_SIZE);
+    this._operatingCorrection = new Float64Array(STATE_SIZE);
+    this._transientPreviousStage = new Float64Array(2 * STATE_SIZE);
+    this._transientCorrection = new Float64Array(2 * STATE_SIZE);
+    this._newtonResult = {error: 0, scale: 0, residualNorm: 0};
     this._refreshViews();
     this.state = new CircuitStateView(this);
   }
@@ -241,7 +246,7 @@ export class __CLASS_NAME__ {
         OFFSETS.jacobian,
       );
       norm = residualNorm();
-      if (!Number.isFinite(norm)) throw new Error("Operating-point residual is non-finite");
+      if (!Number.isFinite(norm)) throw new Error(`Operating-point residual is non-finite at t=${time}`);
       if (norm <= residualTolerance) return finish(iterations, norm);
       const status = this._linearSolve(
         OFFSETS.jacobian,
@@ -249,11 +254,13 @@ export class __CLASS_NAME__ {
         STATE_SIZE,
         pivotTolerance,
       );
-      if (status === 1) throw new Error("Operating-point Jacobian is singular or ill-conditioned");
-      if (status !== 0) throw new Error("Operating-point Jacobian contains a non-finite pivot");
+      if (status === 1) throw new Error(`Operating-point Jacobian is singular or ill-conditioned at t=${time}`);
+      if (status !== 0) throw new Error(`Operating-point Jacobian contains a non-finite pivot at t=${time}`);
 
-      const previousState = Float64Array.from(this.vectors.state);
-      const correction = Float64Array.from(this.vectors.residual.subarray(0, STATE_SIZE));
+      const previousState = this._operatingPreviousState;
+      const correction = this._operatingCorrection;
+      previousState.set(this.vectors.state);
+      correction.set(this.vectors.residual.subarray(0, STATE_SIZE));
       let multiplier = 1;
       let improved = false;
       while (multiplier >= minimumStepMultiplier) {
@@ -276,14 +283,14 @@ export class __CLASS_NAME__ {
       }
       if (!improved) {
         this.vectors.state.set(previousState);
-        throw new Error(`Operating-point backtracking failed below step multiplier ${minimumStepMultiplier}`);
+        throw new Error(`Operating-point backtracking failed at t=${time} below step multiplier ${minimumStepMultiplier}`);
       }
       if (norm <= residualTolerance) return finish(iterations + 1, norm);
     }
-    throw new Error(`Operating-point Newton iteration did not converge after ${iterations} iterations (residual norm ${norm})`);
+    throw new Error(`Operating-point Newton iteration did not converge at t=${time} after ${iterations} iterations (residual norm ${norm})`);
   }
 
-  newtonIteration(time, stepSize, pivotTolerance = 1e-14, residualTolerance = 1e-10) {
+  newtonIteration(time, stepSize, pivotTolerance = 1e-14, residualTolerance = 1e-10, minimumStepMultiplier = 2 ** -20) {
     this._refreshViews();
     this._stepFunction(
       OFFSETS.stageDerivatives,
@@ -306,7 +313,10 @@ export class __CLASS_NAME__ {
           + 1 / 4 * this.vectors.stageDerivatives[STATE_SIZE + index]
         );
       }
-      return {error: 0, scale: 0, residualNorm};
+      this._newtonResult.error = 0;
+      this._newtonResult.scale = 0;
+      this._newtonResult.residualNorm = residualNorm;
+      return this._newtonResult;
     }
     const status = this._linearSolve(
       OFFSETS.jacobian,
@@ -317,13 +327,46 @@ export class __CLASS_NAME__ {
     if (status === 1) throw new Error("Newton Jacobian is singular or ill-conditioned");
     if (status !== 0) throw new Error("Newton Jacobian contains a non-finite pivot");
 
+    const previousStage = this._transientPreviousStage;
+    const correction = this._transientCorrection;
+    previousStage.set(this.vectors.stageDerivatives);
+    correction.set(this.vectors.residual);
+    let multiplier = 1;
+    let candidateNorm = Infinity;
+    let improved = false;
+    while (multiplier >= minimumStepMultiplier) {
+      for (let index = 0; index < this.vectors.stageDerivatives.length; ++index) {
+        this.vectors.stageDerivatives[index] = previousStage[index] - multiplier * correction[index];
+      }
+      this._stepFunction(
+        OFFSETS.stageDerivatives,
+        time,
+        stepSize,
+        OFFSETS.state,
+        OFFSETS.residual,
+        OFFSETS.jacobian,
+      );
+      candidateNorm = 0;
+      for (let index = 0; index < this.vectors.residual.length; ++index) {
+        candidateNorm = Math.max(candidateNorm, Math.abs(this.vectors.residual[index]));
+      }
+      if (Number.isFinite(candidateNorm) && candidateNorm < residualNorm) {
+        improved = true;
+        break;
+      }
+      multiplier *= 0.5;
+    }
+    if (!improved) {
+      this.vectors.stageDerivatives.set(previousStage);
+      throw new Error(`Transient Newton backtracking failed below step multiplier ${minimumStepMultiplier}`);
+    }
+
     let error = 0;
     let scale = 0;
     for (let index = 0; index < this.vectors.stageDerivatives.length; ++index) {
-      const previous = this.vectors.stageDerivatives[index];
-      const updated = previous - this.vectors.residual[index];
+      const updated = this.vectors.stageDerivatives[index];
       this.vectors.updatedStageDerivatives[index] = updated;
-      error = Math.max(error, Math.abs(updated - previous));
+      error = Math.max(error, Math.abs(multiplier * correction[index]));
       scale = Math.max(scale, Math.abs(updated));
     }
     for (let index = 0; index < STATE_SIZE; ++index) {
@@ -332,18 +375,21 @@ export class __CLASS_NAME__ {
         + 1 / 4 * this.vectors.updatedStageDerivatives[STATE_SIZE + index]
       );
     }
-    this.vectors.stageDerivatives.set(this.vectors.updatedStageDerivatives);
-    return {error, scale};
+    this._newtonResult.error = error;
+    this._newtonResult.scale = scale;
+    this._newtonResult.residualNorm = candidateNorm;
+    return this._newtonResult;
   }
 
   step(time, stepSize, options = {}) {
     const {
-      maxIterations = 10,
+      maxIterations = 20,
       absoluteTolerance = 1e-10,
       relativeTolerance = 1e-8,
       requireConvergence = true,
       pivotTolerance = 1e-14,
       residualTolerance = 1e-10,
+      minimumStepMultiplier = 2 ** -20,
     } = options;
     if (!(stepSize > 0)) throw new RangeError("stepSize must be positive");
     if (!Number.isInteger(maxIterations) || maxIterations < 1) {
@@ -352,17 +398,41 @@ export class __CLASS_NAME__ {
 
     let error = Infinity;
     let scale = 0;
+    let residualNorm = Infinity;
     let iterations = 0;
-    for (; iterations < maxIterations; ++iterations) {
-      ({error, scale} = this.newtonIteration(time, stepSize, pivotTolerance, residualTolerance));
-      if (error <= absoluteTolerance + relativeTolerance * scale) {
-        ++iterations;
-        break;
+    let failure = null;
+    let converged = false;
+    // The second Radau stage is the derivative at the preceding step's end.
+    // Use it as a constant predictor for both stages.  Retaining the old first
+    // stage is particularly harmful immediately after a discontinuous source.
+    this.vectors.stageDerivatives.copyWithin(0, STATE_SIZE, 2 * STATE_SIZE);
+    for (let attempt = 0; attempt < 2; ++attempt) {
+      if (attempt === 1) this.vectors.stageDerivatives.fill(0);
+      error = Infinity;
+      scale = 0;
+      residualNorm = Infinity;
+      iterations = 0;
+      failure = null;
+      for (; iterations < maxIterations; ++iterations) {
+        try {
+          ({error, scale, residualNorm} = this.newtonIteration(time, stepSize, pivotTolerance, residualTolerance, minimumStepMultiplier));
+        } catch (cause) {
+          failure = cause;
+          break;
+        }
+        if (residualNorm <= residualTolerance) {
+          ++iterations;
+          converged = true;
+          break;
+        }
       }
+      if (converged) break;
     }
-    const converged = error <= absoluteTolerance + relativeTolerance * scale;
+    if (failure) {
+      throw new Error(`Transient solve failed at t=${time + stepSize}: ${failure.message}`, {cause: failure});
+    }
     if (!converged && requireConvergence) {
-      throw new Error(`Newton iteration did not converge after ${iterations} iterations`);
+      throw new Error(`Newton iteration did not converge at t=${time + stepSize} after ${iterations} iterations (residual norm ${residualNorm})`);
     }
     this.vectors.state.set(this.vectors.nextState);
     return {time: time + stepSize, iterations, converged, error, scale};
@@ -383,13 +453,53 @@ export class __CLASS_NAME__ {
     if (includeInitial) {
       yield {time, initial: true, state: this.state.snapshot()};
     }
-    while (time < endTime) {
-      const currentStep = Math.min(stepSize, endTime - time);
+    const stepCount = Math.ceil((endTime - startTime) / stepSize);
+    for (let stepIndex = 0; stepIndex < stepCount; ++stepIndex) {
+      const targetTime = Math.min(endTime, startTime + (stepIndex + 1) * stepSize);
+      const currentStep = targetTime - time;
       if (!(currentStep > 0)) break;
       const result = this.step(time, currentStep, stepOptions);
-      time = result.time;
-      yield {...result, initial: false, state: this.state.snapshot()};
+      time = targetTime;
+      yield {...result, time, initial: false, state: this.state.snapshot()};
     }
+  }
+
+  integrateArrays(options) {
+    const {
+      startTime,
+      endTime,
+      stepSize,
+      includeInitial = true,
+      ...stepOptions
+    } = options;
+    if (!(endTime >= startTime)) throw new RangeError("endTime must not precede startTime");
+    if (!(stepSize > 0)) throw new RangeError("stepSize must be positive");
+    const stepCount = Math.ceil((endTime - startTime) / stepSize);
+    const capacity = stepCount + (includeInitial ? 1 : 0);
+    const times = new Float64Array(capacity);
+    const states = new Float64Array(capacity * STATE_SIZE);
+    let sampleCount = 0;
+    const record = time => {
+      times[sampleCount] = time;
+      states.set(this.vectors.state, sampleCount * STATE_SIZE);
+      ++sampleCount;
+    };
+    let time = startTime;
+    if (includeInitial) record(time);
+    for (let stepIndex = 0; stepIndex < stepCount; ++stepIndex) {
+      const targetTime = Math.min(endTime, startTime + (stepIndex + 1) * stepSize);
+      const currentStep = targetTime - time;
+      if (!(currentStep > 0)) break;
+      this.step(time, currentStep, stepOptions);
+      time = targetTime;
+      record(time);
+    }
+    return {
+      times: sampleCount === capacity ? times : times.subarray(0, sampleCount),
+      states: sampleCount === capacity ? states : states.subarray(0, sampleCount * STATE_SIZE),
+      sampleCount,
+      stateSize: STATE_SIZE,
+    };
   }
 }
 

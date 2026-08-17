@@ -34,6 +34,37 @@ def _rc_system() -> antispice.EquationSystem:
     return antispice.compile_circuit(circuit)
 
 
+def _bjt_step_system() -> antispice.EquationSystem:
+    """Construct the nonlinear step-response circuit from the web editor."""
+    circuit = antispice.Circuit(
+        elements={
+            "V1": antispice.Element("voltage-source", ("0", "supply"), {"voltage": "where(t > 0, 10, 0)"}),
+            "R1": antispice.Element("resistor", ("supply", "collector"), {"resistance": 1e3}),
+            "R2": antispice.Element("resistor", ("0", "emitter"), {"resistance": 1e3}),
+            "R3": antispice.Element("resistor", ("base", "supply"), {"resistance": 200e3}),
+            "R4": antispice.Element("resistor", ("0", "base"), {"resistance": 50e3}),
+            "C1": antispice.Element("capacitor", ("base", "collector"), {"capacitance": 100e-6}),
+            "Q1": antispice.Element("2n3904", ("emitter", "base", "collector"), {}),
+        }
+    )
+    return antispice.compile_circuit(circuit)
+
+
+def _bjt_sine_system() -> antispice.EquationSystem:
+    """Construct the collector-feedback amplifier used for predictor fallback."""
+    circuit = antispice.Circuit(
+        elements={
+            "V1": antispice.Element("voltage-source", ("0", "supply"), {"voltage": 10}),
+            "V2": antispice.Element("voltage-source", ("0", "input"), {"voltage": "sin(1000 * t)"}),
+            "R1": antispice.Element("resistor", ("collector", "supply"), {"resistance": 1e3}),
+            "R2": antispice.Element("resistor", ("base", "collector"), {"resistance": 200e3}),
+            "C1": antispice.Element("capacitor", ("input", "base"), {"capacitance": 10e-6}),
+            "Q1": antispice.Element("2n3904", ("0", "base", "collector"), {}),
+        }
+    )
+    return antispice.compile_circuit(circuit)
+
+
 class JavaScriptWrapperTest(unittest.TestCase):
     """Exercise both views and the integration interface in Node.js."""
 
@@ -61,6 +92,37 @@ class JavaScriptWrapperTest(unittest.TestCase):
         convergence = wrapper.index("residualNorm <= residualTolerance")
         factorization = wrapper.index("const status = this._linearSolve", convergence)
         self.assertLess(convergence, factorization)
+
+    def test_transient_newton_uses_residual_backtracking(self) -> None:
+        """Every implicit step rejects Newton updates that worsen its residual."""
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+
+        self.assertIn("candidateNorm < residualNorm", wrapper)
+        self.assertIn("this._transientPreviousStage", wrapper)
+        self.assertIn("this._transientCorrection", wrapper)
+        self.assertIn("Transient Newton backtracking failed", wrapper)
+        self.assertIn("if (residualNorm <= residualTolerance)", wrapper)
+        self.assertIn("if (attempt === 1) this.vectors.stageDerivatives.fill(0)", wrapper)
+
+    def test_convergence_errors_include_simulation_time(self) -> None:
+        """Generated operating-point and integration errors identify their time."""
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+
+        self.assertIn("Operating-point Newton iteration did not converge at t=${time}", wrapper)
+        self.assertIn("Transient solve failed at t=${time + stepSize}", wrapper)
+        self.assertIn("Newton iteration did not converge at t=${time + stepSize}", wrapper)
+
+    def test_wrapper_can_collect_columnar_results(self) -> None:
+        """Plotting output uses contiguous typed arrays instead of snapshot objects."""
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+
+        self.assertIn("integrateArrays(options)", wrapper)
+        self.assertIn("const times = new Float64Array(capacity)", wrapper)
+        self.assertIn("const states = new Float64Array(capacity * STATE_SIZE)", wrapper)
+        self.assertNotIn("for (const sample of this.integrate(options))", wrapper)
+        self.assertIn("states.set(this.vectors.state", wrapper)
+        self.assertIn("times.subarray(0, sampleCount)", wrapper)
+        self.assertIn("const targetTime = Math.min", wrapper)
 
     def test_structured_and_flat_views_alias_and_integrate(self) -> None:
         node = shutil.which("node")
@@ -126,6 +188,57 @@ console.log(JSON.stringify({{
         self.assertEqual(values["firstOutput"], 0)
         self.assertAlmostEqual(values["lastTime"], 1e-3)
         self.assertAlmostEqual(values["lastOutput"], 1 - math.exp(-1), delta=1e-5)
+
+    def test_bjt_step_response_uses_end_stage_as_next_predictor(self) -> None:
+        """A discontinuous first step must not poison the following stage guess."""
+        node = shutil.which("node")
+        if node is None:
+            message = "Node.js is required to execute JavaScript tests"
+            raise unittest.SkipTest(message)
+
+        system = _bjt_step_system()
+        module = antispice.generate_wasm_radau_solver(system)
+        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        runner = """
+import fs from "node:fs";
+import {AntispiceSolver} from "./wrapper.mjs";
+const solver = await AntispiceSolver.instantiate(fs.readFileSync("solver.wasm"));
+solver.initializeOperatingPoint(0);
+const first = solver.step(0, 1e-5, {maxIterations: 20});
+const second = solver.step(1e-5, 1e-5, {maxIterations: 20});
+if (!first.converged || !second.converged) process.exit(1);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)
+            (path / "solver.wasm").write_bytes(module)
+            (path / "wrapper.mjs").write_text(wrapper)
+            (path / "runner.mjs").write_text(runner)
+            subprocess.run([node, "runner.mjs"], cwd=path, check=True)
+
+    def test_bjt_sine_response_retries_without_a_bad_predictor(self) -> None:
+        """A rapidly changing endpoint predictor falls back to a zero start."""
+        node = shutil.which("node")
+        if node is None:
+            message = "Node.js is required to execute JavaScript tests"
+            raise unittest.SkipTest(message)
+
+        system = _bjt_sine_system()
+        module = antispice.generate_wasm_radau_solver(system)
+        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        runner = """
+import fs from "node:fs";
+import {AntispiceSolver} from "./wrapper.mjs";
+const solver = await AntispiceSolver.instantiate(fs.readFileSync("solver.wasm"));
+solver.initializeOperatingPoint(0);
+const result = solver.integrateArrays({startTime: 0, endTime: 0.01, stepSize: 1e-4, maxIterations: 20});
+if (result.sampleCount !== 101) process.exit(1);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)
+            (path / "solver.wasm").write_bytes(module)
+            (path / "wrapper.mjs").write_text(wrapper)
+            (path / "runner.mjs").write_text(runner)
+            subprocess.run([node, "runner.mjs"], cwd=path, check=True)
 
 
 if __name__ == "__main__":

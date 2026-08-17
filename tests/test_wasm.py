@@ -181,10 +181,7 @@ class WasmRadauTest(unittest.TestCase):
                 stage = updated
                 if error <= 1e-10:
                     break
-            state = [
-                state[index] + step_size * (3 / 4 * stage[index] + 1 / 4 * stage[state_size + index])
-                for index in range(state_size)
-            ]
+            state = [state[index] + step_size * (3 / 4 * stage[index] + 1 / 4 * stage[state_size + index]) for index in range(state_size)]
 
         output_index = system.layout.potential_index("output")
         self.assertAlmostEqual(state[output_index], 1 - math.exp(-1), delta=1e-5)
