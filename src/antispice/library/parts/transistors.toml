@@ -1,0 +1,74 @@
+format = 1
+
+["2n3904"]
+model = "bjt-ebers-moll"
+
+["2n3904".parameters]
+polarity = 1
+saturation_current = 6.734e-15
+forward_beta = 416.4
+reverse_beta = 0.7371
+thermal_voltage = 0.02585
+
+["2n3906"]
+model = "bjt-ebers-moll"
+
+["2n3906".parameters]
+polarity = -1
+saturation_current = 1.41e-15
+forward_beta = 180.7
+reverse_beta = 4.977
+thermal_voltage = 0.02585
+
+# Nominal level-1 parameters fitted only to the compact model available here.
+# Breakdown, capacitance, package, temperature, and noise ratings are not modeled.
+["2n7000"]
+model = "fet-shichman-hodges"
+
+["2n7000".parameters]
+polarity = 1
+threshold_voltage = 2.1
+transconductance = 0.09
+channel_length_modulation = 0.01
+
+["bs170"]
+model = "fet-shichman-hodges"
+
+["bs170".parameters]
+polarity = 1
+threshold_voltage = 2.0
+transconductance = 0.08
+channel_length_modulation = 0.01
+
+# BC547/548/549 mainly differ in breakdown/noise selections outside the present
+# Ebers-Moll parameter set. These generic, unsuffixed parts therefore share one
+# representative nominal DC model; gain-class suffixes can be added separately.
+["bc547"]
+model = "bjt-ebers-moll"
+
+["bc547".parameters]
+polarity = 1
+saturation_current = 1.8e-14
+forward_beta = 300
+reverse_beta = 10
+thermal_voltage = 0.02585
+
+["bc548"]
+model = "bjt-ebers-moll"
+
+["bc548".parameters]
+polarity = 1
+saturation_current = 1.8e-14
+forward_beta = 300
+reverse_beta = 10
+thermal_voltage = 0.02585
+
+["bc549"]
+model = "bjt-ebers-moll"
+
+["bc549".parameters]
+polarity = 1
+saturation_current = 1.8e-14
+forward_beta = 300
+reverse_beta = 10
+thermal_voltage = 0.02585

@@ -174,7 +174,7 @@ class BuiltinLibraryTest(unittest.TestCase):
         self.assertEqual(set(fet.auxiliaries), {"v_gs", "v_ds", "overdrive", "channel_current"})
 
     def test_packaged_parts_bind_complete_models(self) -> None:
-        for name in ("1n4148", "2n3904", "2n3906"):
+        for name in ("1n4148", "1n4007", "2n3904", "2n3906", "2n7000", "bs170", "bc547", "bc548", "bc549"):
             with self.subTest(name=name):
                 definition = antispice.BUILTIN_LIBRARY[name]
                 self.assertIsInstance(definition, antispice.Part)

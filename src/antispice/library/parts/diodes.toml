@@ -1,0 +1,17 @@
+format = 1
+
+["1n4148"]
+model = "diode-shockley"
+
+["1n4148".parameters]
+saturation_current = 4.352e-9
+emission_coefficient = 1.906
+thermal_voltage = 0.02585
+
+["1n4007"]
+model = "diode-shockley"
+
+["1n4007".parameters]
+saturation_current = 1.46464e-9
+emission_coefficient = 1.71972
+thermal_voltage = 0.02585
