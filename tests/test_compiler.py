@@ -50,6 +50,8 @@ class CircuitCompilerTest(unittest.TestCase):
         self.assertNotIn("squared", equation)
         self.assertIn("Phi_n**2", equation)
         self.assertEqual(len(system.state), 2)
+        self.assertEqual(tuple(system.auxiliaries), (("X1", "squared"), ("X1", "output")))
+        self.assertNotIn("squared", str(system.auxiliaries["X1", "output"]))
 
     def test_invalid_auxiliary_symbols_are_rejected(self) -> None:
         for auxiliaries, message in (

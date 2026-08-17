@@ -33,12 +33,21 @@ def generate_javascript_radau_wrapper(
         "__STATE_SIZE__": str(len(system.state)),
         "__POTENTIALS__": json.dumps(system.layout.potentials, ensure_ascii=False),
         "__CURRENTS__": json.dumps(currents, ensure_ascii=False),
+        "__AUXILIARIES__": json.dumps(
+            {
+                reference: {name: index for index, (element, name) in enumerate(system.auxiliaries) if element == reference}
+                for reference in dict.fromkeys(element for element, _ in system.auxiliaries)
+            },
+            ensure_ascii=False,
+        ),
+        "__AUXILIARY_COUNT__": str(len(system.auxiliaries)),
         "__STAGE_DERIVATIVES__": str(memory.stage_derivatives),
         "__PREVIOUS_STATE__": str(memory.previous_state),
         "__UPDATED_STAGE_DERIVATIVES__": str(memory.updated_stage_derivatives),
         "__NEXT_STATE__": str(memory.next_state),
         "__RESIDUAL__": str(memory.residual),
         "__JACOBIAN__": str(memory.jacobian),
+        "__AUXILIARY_VALUES__": str(memory.auxiliary_values),
     }
     for marker, value in replacements.items():
         source = source.replace(marker, value)

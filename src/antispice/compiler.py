@@ -51,6 +51,7 @@ class EquationSystem:
     state_derivative: Expressions
     equations: Expressions
     layout: StateLayout
+    auxiliaries: dict[tuple[str, str], SymbolicExpression] = dataclasses.field(default_factory=dict)
 
     def __post_init__(self) -> None:
         size = len(self.state)
@@ -87,6 +88,7 @@ class RadauMemoryLayout:
     next_state: int
     residual: int
     jacobian: int
+    auxiliary_values: int
     byte_length: int
 
 
@@ -99,6 +101,7 @@ def radau_memory_layout(system: EquationSystem) -> RadauMemoryLayout:
     next_state = updated_stage_derivatives + 2 * state_size * 8
     residual = next_state + state_size * 8
     jacobian = residual + 2 * state_size * 8
+    auxiliary_values = jacobian + (2 * state_size) ** 2 * 8
     return RadauMemoryLayout(
         stage_derivatives=stage_derivatives,
         previous_state=previous_state,
@@ -106,7 +109,8 @@ def radau_memory_layout(system: EquationSystem) -> RadauMemoryLayout:
         next_state=next_state,
         residual=residual,
         jacobian=jacobian,
-        byte_length=jacobian + (2 * state_size) ** 2 * 8,
+        auxiliary_values=auxiliary_values,
+        byte_length=auxiliary_values + len(system.auxiliaries) * 8,
     )
 
 
@@ -140,6 +144,7 @@ def compile_circuit(circuit: Circuit) -> EquationSystem:
     time = wrenfold.sym.symbol("t")
     kcl = dict.fromkeys(potentials, wrenfold.sym.zero)
     constitutive_equations: list[SymbolicExpression] = []
+    auxiliary_expressions: dict[tuple[str, str], SymbolicExpression] = {}
 
     for element_name, element in circuit.elements.items():
         model = circuit.resolve_model(element)
@@ -169,13 +174,13 @@ def compile_circuit(circuit: Circuit) -> EquationSystem:
         if reference_net != REFERENCE_NODE:
             kcl[reference_net] += reference_current
 
-        environment.update(
-            _compile_auxiliaries(
-                model.auxiliaries,
-                environment=environment,
-                element_name=element_name,
-            )
+        compiled_auxiliaries = _compile_auxiliaries(
+            model.auxiliaries,
+            environment=environment,
+            element_name=element_name,
         )
+        environment.update(compiled_auxiliaries)
+        auxiliary_expressions.update(((element_name, name), expression) for name, expression in compiled_auxiliaries.items())
 
         for equation in model.equations:
             constitutive_equations.append(
@@ -192,6 +197,7 @@ def compile_circuit(circuit: Circuit) -> EquationSystem:
         state_derivative=state_derivative,
         equations=(*kcl.values(), *constitutive_equations),
         layout=layout,
+        auxiliaries=auxiliary_expressions,
     )
 
 
@@ -343,6 +349,25 @@ def transpile_stationary_evaluator(system: EquationSystem, *, function_name: str
     return wrenfold.code_generation.transpile(description)
 
 
+def transpile_auxiliary_evaluator(system: EquationSystem, *, function_name: str = "evaluate_auxiliaries") -> typing.Any:
+    """Create Wrenfold IR evaluating all named model auxiliaries."""
+    values = _column(tuple(system.auxiliaries.values()))
+    description = wrenfold.FunctionDescription(function_name)
+    input_state = description.add_input_argument("state", wrenfold.type_info.MatrixType(rows=len(system.state), cols=1))
+    input_derivative = description.add_input_argument(
+        "state_derivative",
+        wrenfold.type_info.MatrixType(rows=len(system.state_derivative), cols=1),
+    )
+    input_time = description.add_input_argument("time", wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float))
+    replacements = [
+        *zip(system.state, input_state, strict=True),
+        *zip(system.state_derivative, input_derivative, strict=True),
+        (system.time, input_time),
+    ]
+    description.add_output_argument("values", is_optional=False, value=values.subs(replacements))
+    return wrenfold.code_generation.transpile(description)
+
+
 def generate_python_radau_solver(
     system: EquationSystem,
     *,
@@ -369,8 +394,10 @@ def generate_wasm_radau_solver(
     step = discretize_radau_iia(system)
     evaluator = transpile_radau_evaluator(step, function_name=function_name)
     stationary = transpile_stationary_evaluator(system)
+    auxiliaries = transpile_auxiliary_evaluator(system) if system.auxiliaries else None
     solver = dense_lu_solve_function()
-    return WasmGenerator(memory_pages=max(memory_pages, required_pages)).generate((evaluator, stationary, solver))
+    functions = tuple(item for item in (evaluator, stationary, auxiliaries, solver) if item is not None)
+    return WasmGenerator(memory_pages=max(memory_pages, required_pages)).generate(functions)
 
 
 def _ordered_nodes(circuit: Circuit) -> tuple[str, ...]:

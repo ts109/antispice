@@ -134,6 +134,34 @@ class WasmRadauTest(unittest.TestCase):
 
         self.assertAlmostEqual(state[system.layout.potential_index("output")], 5)
 
+    def test_auxiliary_evaluator_observes_state_without_solver_overhead(self) -> None:
+        """Named model expressions are evaluated through the generated WASM ABI."""
+        model = antispice.Model(
+            ports=("ref", "p"),
+            parameters=("gain",),
+            equations=("I_p",),
+            auxiliaries={"scaled": "gain * U_p"},
+        )
+        system = antispice.compile_circuit(antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "out"), {"gain": 3})}))
+        layout = antispice.radau_memory_layout(system)
+        store, instance = _instantiate(antispice.generate_wasm_radau_solver(system))
+        exports = instance.exports(store)
+        memory = exports["memory"]
+        state = [0.0] * len(system.state)
+        state[system.layout.potential_index("out")] = 2.5
+        _write_f64(memory, store, layout.previous_state, state)
+        _write_f64(memory, store, layout.stage_derivatives, [0.0] * len(system.state))
+
+        exports["evaluate_auxiliaries"](
+            store,
+            layout.previous_state,
+            layout.stage_derivatives,
+            0.0,
+            layout.auxiliary_values,
+        )
+
+        self.assertEqual(_read_f64(memory, store, layout.auxiliary_values, 1), [7.5])
+
     def test_generated_solver_integrates_rc_step_response(self) -> None:
         circuit = antispice.Circuit(
             elements={

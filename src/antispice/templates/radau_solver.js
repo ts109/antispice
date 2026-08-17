@@ -3,6 +3,8 @@ const FUNCTION_NAME = __FUNCTION_NAME__;
 const STATE_SIZE = __STATE_SIZE__;
 const POTENTIAL_INDICES = Object.freeze(__POTENTIALS__);
 const CURRENT_INDICES = Object.freeze(__CURRENTS__);
+const AUXILIARY_INDICES = Object.freeze(__AUXILIARIES__);
+const AUXILIARY_COUNT = __AUXILIARY_COUNT__;
 const POTENTIAL_COUNT = Object.keys(POTENTIAL_INDICES).length;
 const OFFSETS = Object.freeze({
   stageDerivatives: __STAGE_DERIVATIVES__,
@@ -11,6 +13,7 @@ const OFFSETS = Object.freeze({
   nextState: __NEXT_STATE__,
   residual: __RESIDUAL__,
   jacobian: __JACOBIAN__,
+  auxiliaryValues: __AUXILIARY_VALUES__,
 });
 
 const DEFAULT_MATH_IMPORTS = Object.freeze({
@@ -118,6 +121,7 @@ export class __CLASS_NAME__ {
     this.memory = instance.exports.memory;
     this._stepFunction = instance.exports[FUNCTION_NAME];
     this._stationaryFunction = instance.exports.stationary_evaluate;
+    this._auxiliaryFunction = instance.exports.evaluate_auxiliaries;
     this._linearSolve = instance.exports.dense_lu_solve;
     if (!(this.memory instanceof WebAssembly.Memory)) {
       throw new TypeError("The WebAssembly module does not export memory");
@@ -130,6 +134,9 @@ export class __CLASS_NAME__ {
     }
     if (typeof this._stationaryFunction !== "function") {
       throw new TypeError("The WebAssembly module does not export stationary_evaluate");
+    }
+    if (AUXILIARY_COUNT && typeof this._auxiliaryFunction !== "function") {
+      throw new TypeError("The WebAssembly module does not export evaluate_auxiliaries");
     }
     this._buffer = null;
     this.vectors = null;
@@ -155,12 +162,24 @@ export class __CLASS_NAME__ {
       nextState: new Float64Array(this._buffer, OFFSETS.nextState, STATE_SIZE),
       residual: new Float64Array(this._buffer, OFFSETS.residual, 2 * STATE_SIZE),
       jacobian: new Float64Array(this._buffer, OFFSETS.jacobian, 4 * STATE_SIZE * STATE_SIZE),
+      auxiliaryValues: new Float64Array(this._buffer, OFFSETS.auxiliaryValues, AUXILIARY_COUNT),
     });
   }
 
   reset(value = 0) {
     this._refreshViews();
     for (const vector of Object.values(this.vectors)) vector.fill(value);
+  }
+
+  _evaluateAuxiliaries(time) {
+    if (!AUXILIARY_COUNT) return this.vectors.auxiliaryValues;
+    this._auxiliaryFunction(
+      OFFSETS.state,
+      OFFSETS.stageDerivatives + STATE_SIZE * Float64Array.BYTES_PER_ELEMENT,
+      time,
+      OFFSETS.auxiliaryValues,
+    );
+    return this.vectors.auxiliaryValues;
   }
 
   initializeOperatingPoint(time, options = {}) {
@@ -455,21 +474,26 @@ export class __CLASS_NAME__ {
     let capacity = 256;
     let times = new Float64Array(capacity);
     let states = new Float64Array(capacity * STATE_SIZE);
+    let auxiliaries = new Float64Array(capacity * AUXILIARY_COUNT);
     let sampleCount = 0;
     const reserve = required => {
       if (required <= capacity) return;
       while (capacity < required) capacity *= 2;
       const grownTimes = new Float64Array(capacity);
       const grownStates = new Float64Array(capacity * STATE_SIZE);
+      const grownAuxiliaries = new Float64Array(capacity * AUXILIARY_COUNT);
       grownTimes.set(times.subarray(0, sampleCount));
       grownStates.set(states.subarray(0, sampleCount * STATE_SIZE));
+      grownAuxiliaries.set(auxiliaries.subarray(0, sampleCount * AUXILIARY_COUNT));
       times = grownTimes;
       states = grownStates;
+      auxiliaries = grownAuxiliaries;
     };
     const record = (time, state = this.vectors.state) => {
       reserve(sampleCount + 1);
       times[sampleCount] = time;
       states.set(state, sampleCount * STATE_SIZE);
+      if (AUXILIARY_COUNT) auxiliaries.set(this._evaluateAuxiliaries(time), sampleCount * AUXILIARY_COUNT);
       ++sampleCount;
     };
 
@@ -501,6 +525,8 @@ export class __CLASS_NAME__ {
     return {
       times: times.subarray(0, sampleCount),
       states: states.subarray(0, sampleCount * STATE_SIZE),
+      auxiliaries: auxiliaries.subarray(0, sampleCount * AUXILIARY_COUNT),
+      auxiliaryCount: AUXILIARY_COUNT,
       sampleCount,
       stateSize: STATE_SIZE,
       acceptedSteps,
@@ -548,10 +574,12 @@ export class __CLASS_NAME__ {
     const capacity = stepCount + (includeInitial ? 1 : 0);
     const times = new Float64Array(capacity);
     const states = new Float64Array(capacity * STATE_SIZE);
+    const auxiliaries = new Float64Array(capacity * AUXILIARY_COUNT);
     let sampleCount = 0;
     const record = time => {
       times[sampleCount] = time;
       states.set(this.vectors.state, sampleCount * STATE_SIZE);
+      if (AUXILIARY_COUNT) auxiliaries.set(this._evaluateAuxiliaries(time), sampleCount * AUXILIARY_COUNT);
       ++sampleCount;
     };
     let time = startTime;
@@ -567,6 +595,8 @@ export class __CLASS_NAME__ {
     return {
       times: sampleCount === capacity ? times : times.subarray(0, sampleCount),
       states: sampleCount === capacity ? states : states.subarray(0, sampleCount * STATE_SIZE),
+      auxiliaries: sampleCount === capacity ? auxiliaries : auxiliaries.subarray(0, sampleCount * AUXILIARY_COUNT),
+      auxiliaryCount: AUXILIARY_COUNT,
       sampleCount,
       stateSize: STATE_SIZE,
     };
@@ -577,5 +607,6 @@ export const circuitLayout = Object.freeze({
   stateSize: STATE_SIZE,
   potentials: POTENTIAL_INDICES,
   currents: CURRENT_INDICES,
+  auxiliaries: AUXILIARY_INDICES,
   offsets: OFFSETS,
 });
