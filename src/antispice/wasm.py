@@ -63,7 +63,8 @@ class WasmGenerator(wrenfold.BaseGenerator):
     def __init__(self, *, memory_pages: int = 1, math_module: str = "math") -> None:
         super().__init__()
         if memory_pages < 1:
-            raise ValueError("memory_pages must be positive")
+            msg = "memory_pages must be positive"
+            raise ValueError(msg)
         self.memory_pages = memory_pages
         self.math_module = math_module
         self.abi: tuple[WasmFunction, ...] = ()
@@ -75,7 +76,8 @@ class WasmGenerator(wrenfold.BaseGenerator):
         """Generate a directly executable WebAssembly module binary."""
         definitions = tuple(definition) if isinstance(definition, typing.Sequence) else (definition,)
         if not definitions:
-            raise ValueError("at least one function definition is required")
+            msg = "at least one function definition is required"
+            raise ValueError(msg)
 
         symbolic_definitions = tuple(item for item in definitions if isinstance(item, ast.FunctionDefinition))
         imports = _collect_math_imports(symbolic_definitions)
@@ -210,7 +212,8 @@ class _FunctionEmitter:
             return b"".join(_local_get(pointer) + self._expression(value) + _store(_F64, index * 8) for index, value in enumerate(values))
         if isinstance(statement, ast.ReturnObject):
             return self._expression(statement.value) + b"\x0f"
-        raise NotImplementedError(f"unsupported Wrenfold statement: {type(statement).__name__}")
+        msg = f"unsupported Wrenfold statement: {type(statement).__name__}"
+        raise NotImplementedError(msg)
 
     def _span(self, span: ast.AstSpan) -> bytes:
         return b"".join(self._statement(statement) for statement in span)
@@ -222,7 +225,8 @@ class _FunctionEmitter:
             return _local_get(self.argument_indices[expression.argument.name])
         if isinstance(expression, ast.GetMatrixElement):
             if not isinstance(expression.arg, ast.GetArgument):
-                raise NotImplementedError("matrix temporaries are not supported")
+                msg = "matrix temporaries are not supported"
+                raise NotImplementedError(msg)
             argument = expression.arg.argument
             offset = (expression.row * argument.type.cols + expression.col) * 8
             return _local_get(self.argument_indices[argument.name]) + _load(_F64, offset)
@@ -258,7 +262,8 @@ class _FunctionEmitter:
             return self._call_standard_function(expression)
         if isinstance(expression, ast.Ternary):
             return self._expression(expression.left) + self._expression(expression.right) + self._expression(expression.condition) + b"\x1b"
-        raise NotImplementedError(f"unsupported Wrenfold expression: {type(expression).__name__}")
+        msg = f"unsupported Wrenfold expression: {type(expression).__name__}"
+        raise NotImplementedError(msg)
 
     def _fold(
         self,
@@ -268,7 +273,8 @@ class _FunctionEmitter:
     ) -> bytes:
         values = tuple(arguments)
         if not values:
-            raise ValueError("an arithmetic expression must have operands")
+            msg = "an arithmetic expression must have operands"
+            raise ValueError(msg)
         opcode = bytes([opcode_for_type(self._expression_type(expression))])
         result = bytearray(self._expression(values[0]))
         for value in values[1:]:
@@ -293,7 +299,8 @@ class _FunctionEmitter:
         try:
             return code + conversions[source_type, destination_type]
         except KeyError as error:
-            raise NotImplementedError(f"unsupported cast from {source_type:#x} to {destination_type:#x}") from error
+            msg = f"unsupported cast from {source_type:#x} to {destination_type:#x}"
+            raise NotImplementedError(msg) from error
 
     def _compare(self, expression: ast.Compare) -> bytes:
         value_type = self._expression_type(expression.left)
@@ -311,7 +318,8 @@ class _FunctionEmitter:
         try:
             opcode = operations[value_type, expression.operation]
         except KeyError as error:
-            raise NotImplementedError(f"unsupported comparison: {expression.operation}") from error
+            msg = f"unsupported comparison: {expression.operation}"
+            raise NotImplementedError(msg) from error
         return self._expression(expression.left) + self._expression(expression.right) + bytes([opcode])
 
     def _call_standard_function(self, expression: ast.CallStdFunction) -> bytes:
@@ -361,7 +369,8 @@ class _FunctionEmitter:
             return self._expression_type(expression.left)
         if isinstance(expression, ast.Negate):
             return self._expression_type(expression.arg)
-        raise NotImplementedError(f"cannot determine type of {type(expression).__name__}")
+        msg = f"cannot determine type of {type(expression).__name__}"
+        raise NotImplementedError(msg)
 
 
 def generate_wasm(
@@ -535,7 +544,8 @@ def _argument_wasm_type(argument: wrenfold.code_generation.Argument) -> int:
 
 def _numeric_wasm_type(value_type: typing.Any) -> int:
     if not isinstance(value_type, type_info.ScalarType):
-        raise NotImplementedError(f"unsupported Wrenfold type: {value_type}")
+        msg = f"unsupported Wrenfold type: {value_type}"
+        raise NotImplementedError(msg)
     return _numeric_type_to_wasm(value_type.numeric_type)
 
 
@@ -661,7 +671,8 @@ def _store(value_type: int, offset: int) -> bytes:
 
 def _unsigned(value: int) -> bytes:
     if value < 0:
-        raise ValueError("unsigned LEB128 cannot encode a negative value")
+        msg = "unsigned LEB128 cannot encode a negative value"
+        raise ValueError(msg)
     encoded = bytearray()
     while True:
         byte = value & 0x7F

@@ -33,13 +33,17 @@ class Model:
 
     def __post_init__(self) -> None:
         if len(self.ports) < 2:
-            raise ValueError("a model must have at least two ports")
+            msg = "a model must have at least two ports"
+            raise ValueError(msg)
         if len(set(self.ports)) != len(self.ports):
-            raise ValueError("model port names must be unique")
+            msg = "model port names must be unique"
+            raise ValueError(msg)
         if len(set(self.parameters)) != len(self.parameters):
-            raise ValueError("model parameter names must be unique")
+            msg = "model parameter names must be unique"
+            raise ValueError(msg)
         if len(self.equations) != len(self.ports) - 1:
-            raise ValueError(f"a model with {len(self.ports)} ports must have {len(self.ports) - 1} equations")
+            msg = f"a model with {len(self.ports)} ports must have {len(self.ports) - 1} equations"
+            raise ValueError(msg)
 
 
 @dataclasses.dataclass
@@ -80,7 +84,8 @@ class Circuit:
             try:
                 return BUILTIN_LIBRARY[builtin_name]
             except KeyError as error:
-                raise KeyError(f"unknown built-in definition: {reference!r}") from error
+                msg = f"unknown built-in definition: {reference!r}"
+                raise KeyError(msg) from error
 
         if reference in self.library:
             return self.library[reference]
@@ -88,7 +93,8 @@ class Circuit:
         try:
             return BUILTIN_LIBRARY[reference]
         except KeyError as error:
-            raise KeyError(f"unknown definition: {reference!r}") from error
+            msg = f"unknown definition: {reference!r}"
+            raise KeyError(msg) from error
 
     def resolve_model(self, element: Element | str) -> Model:
         """Return the ordinary, flat model used by an element."""
@@ -100,7 +106,8 @@ class Circuit:
 
         model = self.resolve_definition(definition.model)
         if isinstance(model, Part):
-            raise ValueError("a part must reference a model, not another part")
+            msg = "a part must reference a model, not another part"
+            raise ValueError(msg)  # noqa: TRY004 - invalid model composition, not a caller type
         return model
 
     def resolve_parameters(self, element: Element | str) -> dict[str, Expression]:
@@ -123,13 +130,15 @@ class Circuit:
             if isinstance(definition, Part):
                 model = self.resolve_definition(definition.model)
                 if isinstance(model, Part):
-                    raise ValueError(f"part {name!r} must reference a model, not another part")
+                    msg = f"part {name!r} must reference a model, not another part"
+                    raise ValueError(msg)  # noqa: TRY004 - invalid library composition
                 self._validate_parameters(model, definition.parameters, f"part {name!r}")
 
         for name, element in self.elements.items():
             model = self.resolve_model(element)
             if len(element.nodes) != len(model.ports):
-                raise ValueError(f"element {name!r} connects {len(element.nodes)} nodes, but its model has {len(model.ports)} ports")
+                msg = f"element {name!r} connects {len(element.nodes)} nodes, but its model has {len(model.ports)} ports"
+                raise ValueError(msg)
             self.resolve_parameters(element)
 
     def _resolve_element(self, element: Element | str) -> Element:
@@ -138,7 +147,8 @@ class Circuit:
         try:
             return self.elements[element]
         except KeyError as error:
-            raise KeyError(f"unknown element: {element!r}") from error
+            msg = f"unknown element: {element!r}"
+            raise KeyError(msg) from error
 
     @staticmethod
     def _validate_parameters(
@@ -152,12 +162,14 @@ class Circuit:
         unknown = actual - expected
         if unknown:
             names = ", ".join(sorted(unknown))
-            raise ValueError(f"{subject} has unknown model parameters: {names}")
+            msg = f"{subject} has unknown model parameters: {names}"
+            raise ValueError(msg)
 
         missing = expected - actual
         if missing:
             names = ", ".join(sorted(missing))
-            raise ValueError(f"{subject} is missing model parameters: {names}")
+            msg = f"{subject} is missing model parameters: {names}"
+            raise ValueError(msg)
 
 
 BUILTIN_LIBRARY_FILENAME = "builtin_library.toml"
@@ -165,7 +177,8 @@ BUILTIN_LIBRARY_FILENAME = "builtin_library.toml"
 
 def _decode_definition(name: str, value: Any) -> Definition:
     if not isinstance(value, dict):
-        raise ValueError(f"library definition {name!r} must be a table")
+        msg = f"library definition {name!r} must be a table"
+        raise TypeError(msg)
 
     keys = set(value)
     if "model" in keys:
@@ -173,9 +186,11 @@ def _decode_definition(name: str, value: Any) -> Definition:
         if keys != expected:
             raise ValueError(_shape_error(name, "part", keys, expected))
         if not isinstance(value["model"], str):
-            raise ValueError(f"library part {name!r} must reference its model by name")
+            msg = f"library part {name!r} must reference its model by name"
+            raise ValueError(msg)
         if not isinstance(value["parameters"], dict):
-            raise ValueError(f"library part {name!r} parameters must be a table")
+            msg = f"library part {name!r} parameters must be a table"
+            raise ValueError(msg)
         return Part(model=value["model"], parameters=dict(value["parameters"]))
 
     expected = {"ports", "parameters", "equations"}
@@ -183,9 +198,11 @@ def _decode_definition(name: str, value: Any) -> Definition:
     if not keys <= allowed or not expected <= keys:
         raise ValueError(_shape_error(name, "model", keys, expected, allowed))
     if not isinstance(value["parameters"], list):
-        raise ValueError(f"library model {name!r} parameters must be an array")
+        msg = f"library model {name!r} parameters must be an array"
+        raise TypeError(msg)
     if not isinstance(value.get("auxiliaries", {}), dict):
-        raise ValueError(f"library model {name!r} auxiliaries must be a table")
+        msg = f"library model {name!r} auxiliaries must be a table"
+        raise TypeError(msg)
     return Model(
         ports=tuple(value["ports"]),
         parameters=tuple(value["parameters"]),
@@ -222,7 +239,8 @@ def _load_library_file(
 ) -> dict[str, Definition]:
     if filename in stack:
         chain = " -> ".join(map(str, (*stack, filename)))
-        raise ValueError(f"cyclic library include: {chain}")
+        msg = f"cyclic library include: {chain}"
+        raise ValueError(msg)
 
     location = root.joinpath(*filename.parts)
     try:
@@ -230,20 +248,24 @@ def _load_library_file(
             encoded = tomllib.load(source)
     except (OSError, tomllib.TOMLDecodeError) as error:
         chain = " -> ".join(map(str, (*stack, filename)))
-        raise ValueError(f"cannot load library file {filename}: {error}; include chain: {chain}") from error
+        msg = f"cannot load library file {filename}: {error}; include chain: {chain}"
+        raise ValueError(msg) from error
 
     version = encoded.pop("format", 1)
     if version != 1:
-        raise ValueError(f"library file {filename} has unsupported format {version!r}")
+        msg = f"library file {filename} has unsupported format {version!r}"
+        raise ValueError(msg)
     includes = encoded.pop("include", [])
     if not isinstance(includes, list) or not all(isinstance(include, str) for include in includes):
-        raise ValueError(f"library file {filename} include must be an array of paths")
+        msg = f"library file {filename} include must be an array of paths"
+        raise ValueError(msg)
 
     library: dict[str, Definition] = {}
     for include in includes:
         relative = PurePosixPath(include)
         if relative.is_absolute() or ".." in relative.parts:
-            raise ValueError(f"library file {filename} has invalid include path {include!r}")
+            msg = f"library file {filename} has invalid include path {include!r}"
+            raise ValueError(msg)
         child = filename.parent.joinpath(relative)
         _merge_library(library, _load_library_file(root, child, (*stack, filename)), child)
 
@@ -256,7 +278,8 @@ def _merge_library(target: dict[str, Definition], source: dict[str, Definition],
     duplicate = target.keys() & source.keys()
     if duplicate:
         names = ", ".join(sorted(duplicate))
-        raise ValueError(f"duplicate library definitions while including {filename}: {names}")
+        msg = f"duplicate library definitions while including {filename}: {names}"
+        raise ValueError(msg)
     target.update(source)
 
 

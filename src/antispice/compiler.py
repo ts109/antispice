@@ -13,6 +13,7 @@ import wrenfold
 from .circuit import Circuit, Expression
 from .expressions import UnknownName as _UnknownName
 from .expressions import parse_expression as _parse_expression
+from .wasm import WasmGenerator, dense_lu_solve_function
 
 REFERENCE_NODE = "0"
 
@@ -29,12 +30,15 @@ class StateLayout:
     currents: dict[ElementPort, int]
 
     def potential_index(self, node: str) -> int:
+        """Return the state-vector index of a non-reference potential."""
         if node == REFERENCE_NODE:
-            raise ValueError("the reference node has no state-vector potential")
+            msg = "the reference node has no state-vector potential"
+            raise ValueError(msg)
 
         return self.potentials[node]
 
     def current_index(self, element: str, port: str) -> int:
+        """Return the state-vector index of an element port current."""
         return self.currents[element, port]
 
 
@@ -52,10 +56,12 @@ class EquationSystem:
         size = len(self.state)
 
         if len(self.state_derivative) != size:
-            raise ValueError("state and state derivative must have equal size")
+            msg = "state and state derivative must have equal size"
+            raise ValueError(msg)
 
         if len(self.equations) != size:
-            raise ValueError(f"equation system is not square: {len(self.equations)} equations for {size} state variables")
+            msg = f"equation system is not square: {len(self.equations)} equations for {size} state variables"
+            raise ValueError(msg)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -356,10 +362,9 @@ def generate_wasm_radau_solver(
     memory_pages: int = 1,
 ) -> bytes:
     """Generate a WebAssembly binary containing the Radau Newton update."""
-    from .wasm import WasmGenerator, dense_lu_solve_function
-
     if memory_pages < 1:
-        raise ValueError("memory_pages must be positive")
+        msg = "memory_pages must be positive"
+        raise ValueError(msg)
     required_pages = (radau_memory_layout(system).byte_length + 65_535) // 65_536
     step = discretize_radau_iia(system)
     evaluator = transpile_radau_evaluator(step, function_name=function_name)
@@ -376,7 +381,8 @@ def _ordered_nodes(circuit: Circuit) -> tuple[str, ...]:
             nodes.setdefault(node, None)
 
     if REFERENCE_NODE not in nodes:
-        raise ValueError(f"circuit must contain reference node {REFERENCE_NODE!r}")
+        msg = f"circuit must contain reference node {REFERENCE_NODE!r}"
+        raise ValueError(msg)
 
     return tuple(nodes)
 
@@ -423,7 +429,8 @@ def _compile_parameters(
 
         if not progressed:
             names = ", ".join(sorted(pending))
-            raise ValueError(f"unresolved or cyclic parameters on element {element_name!r}: {names}")
+            msg = f"unresolved or cyclic parameters on element {element_name!r}: {names}"
+            raise ValueError(msg)
 
     return compiled
 
@@ -438,7 +445,8 @@ def _compile_auxiliaries(
     collisions = auxiliaries.keys() & environment.keys()
     if collisions:
         names = ", ".join(sorted(collisions))
-        raise ValueError(f"auxiliary symbols collide with existing names on element {element_name!r}: {names}")
+        msg = f"auxiliary symbols collide with existing names on element {element_name!r}: {names}"
+        raise ValueError(msg)
 
     compiled: dict[str, SymbolicExpression] = {}
     pending = dict(auxiliaries)
@@ -458,7 +466,8 @@ def _compile_auxiliaries(
 
         if not progressed:
             names = ", ".join(sorted(pending))
-            raise ValueError(f"unresolved or cyclic auxiliary symbols on element {element_name!r}: {names}")
+            msg = f"unresolved or cyclic auxiliary symbols on element {element_name!r}: {names}"
+            raise ValueError(msg)
 
     return compiled
 
@@ -493,7 +502,8 @@ def _solve_lower(matrix: wrenfold.sym.MatrixExpr, right_hand_side: wrenfold.sym.
     rows, columns = matrix.shape
 
     if rows != columns or right_hand_side.shape[0] != rows:
-        raise ValueError("incompatible lower-triangular system")
+        msg = "incompatible lower-triangular system"
+        raise ValueError(msg)
 
     result = [[None] * right_hand_side.shape[1] for _ in range(rows)]
 
@@ -511,7 +521,8 @@ def _solve_upper(matrix: wrenfold.sym.MatrixExpr, right_hand_side: wrenfold.sym.
     rows, columns = matrix.shape
 
     if rows != columns or right_hand_side.shape[0] != rows:
-        raise ValueError("incompatible upper-triangular system")
+        msg = "incompatible upper-triangular system"
+        raise ValueError(msg)
 
     result = [[None] * right_hand_side.shape[1] for _ in range(rows)]
 

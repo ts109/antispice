@@ -177,7 +177,8 @@ if (!unequal) process.exit(3);
     def test_structured_and_flat_views_alias_and_integrate(self) -> None:
         node = shutil.which("node")
         if node is None:
-            raise unittest.SkipTest("Node.js is required to execute JavaScript tests")
+            message = "Node.js is required to execute JavaScript tests"
+            raise unittest.SkipTest(message)
 
         system = _rc_system()
         module = antispice.generate_wasm_radau_solver(system)

@@ -41,7 +41,7 @@ class WasmGeneratorTest(unittest.TestCase):
             antispice.WasmGenerator(memory_pages=0)
 
     def test_scalar_function_with_branch_and_math_import(self) -> None:
-        def scalar(x: wrenfold.FloatScalar, y: wrenfold.FloatScalar):
+        def scalar(x: wrenfold.FloatScalar, y: wrenfold.FloatScalar) -> wrenfold.FloatScalar:
             return sym.where(x > 0, sym.sin(x) + 2 * y, sym.sqrt(abs(y)) / 3)
 
         generator = antispice.WasmGenerator()
@@ -59,7 +59,7 @@ class WasmGeneratorTest(unittest.TestCase):
         self.assertAlmostEqual(values[1], math.sqrt(12) / 3)
 
     def test_matrix_arguments_use_exported_row_major_memory(self) -> None:
-        def scale(x: wrenfold.Vector2):
+        def scale(x: wrenfold.Vector2) -> wrenfold.OutputArg:
             return wrenfold.OutputArg(2 * x, "result")
 
         generator = antispice.WasmGenerator()

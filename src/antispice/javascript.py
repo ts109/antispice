@@ -15,9 +15,11 @@ def generate_javascript_radau_wrapper(
 ) -> str:
     """Generate an ES module wrapping the flattened WebAssembly solver ABI."""
     if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", class_name) is None:
-        raise ValueError(f"invalid JavaScript class name: {class_name!r}")
+        msg = f"invalid JavaScript class name: {class_name!r}"
+        raise ValueError(msg)
     if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", function_name) is None:
-        raise ValueError(f"invalid WebAssembly function name: {function_name!r}")
+        msg = f"invalid WebAssembly function name: {function_name!r}"
+        raise ValueError(msg)
 
     memory = radau_memory_layout(system)
     currents: dict[str, dict[str, int]] = {}
