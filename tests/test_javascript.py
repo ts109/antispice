@@ -45,6 +45,23 @@ class JavaScriptWrapperTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "function name"):
             antispice.generate_javascript_radau_wrapper(system, function_name="not-valid")
 
+    def test_operating_point_uses_residual_backtracking(self) -> None:
+        """Generated initialization rejects steps until the residual decreases."""
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+
+        self.assertIn("candidateNorm < norm", wrapper)
+        self.assertIn("multiplier *= 0.5", wrapper)
+        self.assertIn("minimumStepMultiplier = 2 ** -20", wrapper)
+        self.assertIn("Operating-point backtracking failed", wrapper)
+
+    def test_transient_newton_skips_solved_residuals(self) -> None:
+        """A stationary circuit does not factor an unnecessary Radau Jacobian."""
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+
+        convergence = wrapper.index("residualNorm <= residualTolerance")
+        factorization = wrapper.index("const status = this._linearSolve", convergence)
+        self.assertLess(convergence, factorization)
+
     def test_structured_and_flat_views_alias_and_integrate(self) -> None:
         node = shutil.which("node")
         if node is None:

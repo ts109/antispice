@@ -10,7 +10,7 @@ def generate_javascript_radau_wrapper(
     system: EquationSystem,
     *,
     class_name: str = "AntispiceSolver",
-    function_name: str = "radau_newton_step",
+    function_name: str = "radau_evaluate",
 ) -> str:
     """Generate an ES module wrapping the flattened WebAssembly solver ABI.
 
@@ -43,6 +43,8 @@ def generate_javascript_radau_wrapper(
         "__PREVIOUS_STATE__": str(memory.previous_state),
         "__UPDATED_STAGE_DERIVATIVES__": str(memory.updated_stage_derivatives),
         "__NEXT_STATE__": str(memory.next_state),
+        "__RESIDUAL__": str(memory.residual),
+        "__JACOBIAN__": str(memory.jacobian),
     }
 
     for marker, value in replacements.items():
@@ -61,6 +63,8 @@ const OFFSETS = Object.freeze({
   state: __PREVIOUS_STATE__,
   updatedStageDerivatives: __UPDATED_STAGE_DERIVATIVES__,
   nextState: __NEXT_STATE__,
+  residual: __RESIDUAL__,
+  jacobian: __JACOBIAN__,
 });
 
 const DEFAULT_MATH_IMPORTS = Object.freeze({
@@ -167,11 +171,19 @@ export class __CLASS_NAME__ {
     this.instance = instance;
     this.memory = instance.exports.memory;
     this._stepFunction = instance.exports[FUNCTION_NAME];
+    this._stationaryFunction = instance.exports.stationary_evaluate;
+    this._linearSolve = instance.exports.dense_lu_solve;
     if (!(this.memory instanceof WebAssembly.Memory)) {
       throw new TypeError("The WebAssembly module does not export memory");
     }
     if (typeof this._stepFunction !== "function") {
       throw new TypeError(`The WebAssembly module does not export ${FUNCTION_NAME}`);
+    }
+    if (typeof this._linearSolve !== "function") {
+      throw new TypeError("The WebAssembly module does not export dense_lu_solve");
+    }
+    if (typeof this._stationaryFunction !== "function") {
+      throw new TypeError("The WebAssembly module does not export stationary_evaluate");
     }
     this._buffer = null;
     this.vectors = null;
@@ -187,6 +199,8 @@ export class __CLASS_NAME__ {
       state: new Float64Array(this._buffer, OFFSETS.state, STATE_SIZE),
       updatedStageDerivatives: new Float64Array(this._buffer, OFFSETS.updatedStageDerivatives, 2 * STATE_SIZE),
       nextState: new Float64Array(this._buffer, OFFSETS.nextState, STATE_SIZE),
+      residual: new Float64Array(this._buffer, OFFSETS.residual, 2 * STATE_SIZE),
+      jacobian: new Float64Array(this._buffer, OFFSETS.jacobian, 4 * STATE_SIZE * STATE_SIZE),
     });
   }
 
@@ -195,24 +209,128 @@ export class __CLASS_NAME__ {
     for (const vector of Object.values(this.vectors)) vector.fill(value);
   }
 
-  newtonIteration(time, stepSize) {
+  initializeOperatingPoint(time, options = {}) {
+    const {
+      maxIterations = 20,
+      residualTolerance = 1e-10,
+      pivotTolerance = 1e-14,
+      minimumStepMultiplier = 2 ** -20,
+    } = options;
+    if (!Number.isFinite(time)) throw new RangeError("Operating-point time must be finite");
+    this._refreshViews();
+    const residualNorm = () => {
+      let norm = 0;
+      for (let index = 0; index < STATE_SIZE; ++index) {
+        norm = Math.max(norm, Math.abs(this.vectors.residual[index]));
+      }
+      return norm;
+    };
+    const finish = (iterations, norm) => {
+      this.vectors.stageDerivatives.fill(0);
+      this.vectors.updatedStageDerivatives.fill(0);
+      this.vectors.nextState.set(this.vectors.state);
+      return {iterations, converged: true, residualNorm: norm};
+    };
+    let norm = Infinity;
+    let iterations = 0;
+    for (; iterations < maxIterations; ++iterations) {
+      this._stationaryFunction(
+        OFFSETS.state,
+        time,
+        OFFSETS.residual,
+        OFFSETS.jacobian,
+      );
+      norm = residualNorm();
+      if (!Number.isFinite(norm)) throw new Error("Operating-point residual is non-finite");
+      if (norm <= residualTolerance) return finish(iterations, norm);
+      const status = this._linearSolve(
+        OFFSETS.jacobian,
+        OFFSETS.residual,
+        STATE_SIZE,
+        pivotTolerance,
+      );
+      if (status === 1) throw new Error("Operating-point Jacobian is singular or ill-conditioned");
+      if (status !== 0) throw new Error("Operating-point Jacobian contains a non-finite pivot");
+
+      const previousState = Float64Array.from(this.vectors.state);
+      const correction = Float64Array.from(this.vectors.residual.subarray(0, STATE_SIZE));
+      let multiplier = 1;
+      let improved = false;
+      while (multiplier >= minimumStepMultiplier) {
+        for (let index = 0; index < STATE_SIZE; ++index) {
+          this.vectors.state[index] = previousState[index] - multiplier * correction[index];
+        }
+        this._stationaryFunction(
+          OFFSETS.state,
+          time,
+          OFFSETS.residual,
+          OFFSETS.jacobian,
+        );
+        const candidateNorm = residualNorm();
+        if (Number.isFinite(candidateNorm) && candidateNorm < norm) {
+          norm = candidateNorm;
+          improved = true;
+          break;
+        }
+        multiplier *= 0.5;
+      }
+      if (!improved) {
+        this.vectors.state.set(previousState);
+        throw new Error(`Operating-point backtracking failed below step multiplier ${minimumStepMultiplier}`);
+      }
+      if (norm <= residualTolerance) return finish(iterations + 1, norm);
+    }
+    throw new Error(`Operating-point Newton iteration did not converge after ${iterations} iterations (residual norm ${norm})`);
+  }
+
+  newtonIteration(time, stepSize, pivotTolerance = 1e-14, residualTolerance = 1e-10) {
     this._refreshViews();
     this._stepFunction(
       OFFSETS.stageDerivatives,
       time,
       stepSize,
       OFFSETS.state,
-      OFFSETS.updatedStageDerivatives,
-      OFFSETS.nextState,
+      OFFSETS.residual,
+      OFFSETS.jacobian,
     );
+    let residualNorm = 0;
+    for (let index = 0; index < this.vectors.residual.length; ++index) {
+      residualNorm = Math.max(residualNorm, Math.abs(this.vectors.residual[index]));
+    }
+    if (!Number.isFinite(residualNorm)) throw new Error("Newton residual is non-finite");
+    if (residualNorm <= residualTolerance) {
+      this.vectors.updatedStageDerivatives.set(this.vectors.stageDerivatives);
+      for (let index = 0; index < STATE_SIZE; ++index) {
+        this.vectors.nextState[index] = this.vectors.state[index] + stepSize * (
+          3 / 4 * this.vectors.stageDerivatives[index]
+          + 1 / 4 * this.vectors.stageDerivatives[STATE_SIZE + index]
+        );
+      }
+      return {error: 0, scale: 0, residualNorm};
+    }
+    const status = this._linearSolve(
+      OFFSETS.jacobian,
+      OFFSETS.residual,
+      2 * STATE_SIZE,
+      pivotTolerance,
+    );
+    if (status === 1) throw new Error("Newton Jacobian is singular or ill-conditioned");
+    if (status !== 0) throw new Error("Newton Jacobian contains a non-finite pivot");
 
     let error = 0;
     let scale = 0;
     for (let index = 0; index < this.vectors.stageDerivatives.length; ++index) {
       const previous = this.vectors.stageDerivatives[index];
-      const updated = this.vectors.updatedStageDerivatives[index];
+      const updated = previous - this.vectors.residual[index];
+      this.vectors.updatedStageDerivatives[index] = updated;
       error = Math.max(error, Math.abs(updated - previous));
       scale = Math.max(scale, Math.abs(updated));
+    }
+    for (let index = 0; index < STATE_SIZE; ++index) {
+      this.vectors.nextState[index] = this.vectors.state[index] + stepSize * (
+        3 / 4 * this.vectors.updatedStageDerivatives[index]
+        + 1 / 4 * this.vectors.updatedStageDerivatives[STATE_SIZE + index]
+      );
     }
     this.vectors.stageDerivatives.set(this.vectors.updatedStageDerivatives);
     return {error, scale};
@@ -224,6 +342,8 @@ export class __CLASS_NAME__ {
       absoluteTolerance = 1e-10,
       relativeTolerance = 1e-8,
       requireConvergence = true,
+      pivotTolerance = 1e-14,
+      residualTolerance = 1e-10,
     } = options;
     if (!(stepSize > 0)) throw new RangeError("stepSize must be positive");
     if (!Number.isInteger(maxIterations) || maxIterations < 1) {
@@ -234,7 +354,7 @@ export class __CLASS_NAME__ {
     let scale = 0;
     let iterations = 0;
     for (; iterations < maxIterations; ++iterations) {
-      ({error, scale} = this.newtonIteration(time, stepSize));
+      ({error, scale} = this.newtonIteration(time, stepSize, pivotTolerance, residualTolerance));
       if (error <= absoluteTolerance + relativeTolerance * scale) {
         ++iterations;
         break;

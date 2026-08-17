@@ -9,5 +9,8 @@ authors = [{name = "Tillmann Stübler", email = "ts109@pm.me"}]
 dependencies = ["wrenfold"]
 requires-python = ">= 3.14"
 
+[project.optional-dependencies]
+test = ["wasmtime"]
+
 [tool.setuptools.package-data]
 antispice = ["builtin_library.toml", "library/models/*.toml", "library/parts/*.toml"]

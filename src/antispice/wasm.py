@@ -41,6 +41,17 @@ class WasmFunction:
     return_type: str | None
 
 
+@dataclasses.dataclass(frozen=True)
+class NativeWasmFunction:
+    """A function implemented directly with WebAssembly instructions."""
+
+    abi: WasmFunction
+    parameters: tuple[int, ...]
+    results: tuple[int, ...]
+    locals: tuple[int, ...]
+    instructions: bytes
+
+
 class WasmGenerator(wrenfold.BaseGenerator):
     """Generate a complete WebAssembly 1.0 binary from Wrenfold's AST.
 
@@ -59,14 +70,15 @@ class WasmGenerator(wrenfold.BaseGenerator):
 
     def generate(
         self,
-        definition: ast.FunctionDefinition | typing.Sequence[ast.FunctionDefinition],
+        definition: ast.FunctionDefinition | NativeWasmFunction | typing.Sequence[ast.FunctionDefinition | NativeWasmFunction],
     ) -> bytes:
         """Generate a directly executable WebAssembly module binary."""
         definitions = tuple(definition) if isinstance(definition, typing.Sequence) else (definition,)
         if not definitions:
             raise ValueError("at least one function definition is required")
 
-        imports = _collect_math_imports(definitions)
+        symbolic_definitions = tuple(item for item in definitions if isinstance(item, ast.FunctionDefinition))
+        imports = _collect_math_imports(symbolic_definitions)
         import_indices = {name: index for index, name in enumerate(imports)}
 
         type_entries: list[bytes] = []
@@ -83,7 +95,10 @@ class WasmGenerator(wrenfold.BaseGenerator):
         function_type_indices: list[int] = []
         abi: list[WasmFunction] = []
         for function in definitions:
-            parameters, results, function_abi = _function_signature(function.signature)
+            if isinstance(function, NativeWasmFunction):
+                parameters, results, function_abi = function.parameters, function.results, function.abi
+            else:
+                parameters, results, function_abi = _function_signature(function.signature)
             function_type_indices.append(intern_type(parameters, results))
             abi.append(function_abi)
         self.abi = tuple(abi)
@@ -105,17 +120,26 @@ class WasmGenerator(wrenfold.BaseGenerator):
 
         export_entries = [
             _name("memory") + b"\x02" + _unsigned(0),
-            *(_name(function.signature.name) + b"\x00" + _unsigned(len(imports) + index) for index, function in enumerate(definitions)),
+            *(
+                _name(function.abi.name if isinstance(function, NativeWasmFunction) else function.signature.name)
+                + b"\x00"
+                + _unsigned(len(imports) + index)
+                for index, function in enumerate(definitions)
+            ),
         ]
         sections.append(_section(7, _vector(export_entries)))
 
         bodies = []
         for function in definitions:
-            emitter = _FunctionEmitter(
-                function,
-                import_indices=import_indices,
-            )
-            bodies.append(emitter.emit())
+            if isinstance(function, NativeWasmFunction):
+                body = _group_locals(list(function.locals)) + function.instructions + b"\x0b"
+                bodies.append(_unsigned(len(body)) + body)
+            else:
+                emitter = _FunctionEmitter(
+                    function,
+                    import_indices=import_indices,
+                )
+                bodies.append(emitter.emit())
         sections.append(_section(10, _vector(bodies)))
 
         metadata = json.dumps(
@@ -358,6 +382,121 @@ def generate_wasm(
         memory_pages=memory_pages,
         math_module=math_module,
     ).generate(definition)
+
+
+def dense_lu_solve_function(*, name: str = "dense_lu_solve") -> NativeWasmFunction:
+    """Return an in-place dense LU solve with partial row pivoting.
+
+    The matrix is row-major.  The right-hand side is replaced by the solution.
+    Status 0 denotes success, 1 a singular pivot, and 2 a non-finite pivot.
+    """
+    # Parameters: matrix, rhs, dimension, tolerance.
+    k, row, column, pivot = 4, 5, 6, 7
+    maximum, candidate, factor, temporary = 8, 9, 10, 11
+
+    def i32(value: int) -> bytes:
+        return b"\x41" + _signed(value)
+
+    def f64(value: float) -> bytes:
+        return b"\x44" + struct.pack("<d", value)
+
+    def address(row_index: int, column_index: int) -> bytes:
+        return _local_get(0) + _local_get(row_index) + _local_get(2) + b"\x6c" + _local_get(column_index) + b"\x6a" + i32(8) + b"\x6c\x6a"
+
+    def matrix_load(row_index: int, column_index: int) -> bytes:
+        return address(row_index, column_index) + _load(_F64, 0)
+
+    def rhs_address(row_index: int) -> bytes:
+        return _local_get(1) + _local_get(row_index) + i32(8) + b"\x6c\x6a"
+
+    def rhs_load(row_index: int) -> bytes:
+        return rhs_address(row_index) + _load(_F64, 0)
+
+    def while_loop(condition: bytes, body: bytes) -> bytes:
+        return b"\x02\x40\x03\x40" + condition + b"\x0d\x01" + body + b"\x0c\x00\x0b\x0b"
+
+    def increment(local: int) -> bytes:
+        return _local_get(local) + i32(1) + b"\x6a" + _local_set(local)
+
+    code = bytearray()
+    code += i32(0) + _local_set(k)
+
+    # Outer elimination loop: k < dimension.
+    elimination = bytearray()
+    elimination += _local_get(k) + _local_set(pivot)
+    elimination += matrix_load(k, k) + b"\x99" + _local_set(maximum)
+    elimination += _local_get(k) + i32(1) + b"\x6a" + _local_set(row)
+
+    pivot_search = bytearray()
+    pivot_search += matrix_load(row, k) + b"\x99" + _local_set(candidate)
+    pivot_search += _local_get(candidate) + _local_get(maximum) + b"\x64\x04\x40"
+    pivot_search += _local_get(candidate) + _local_set(maximum)
+    pivot_search += _local_get(row) + _local_set(pivot) + b"\x0b"
+    pivot_search += increment(row)
+    elimination += while_loop(_local_get(row) + _local_get(2) + b"\x4f", bytes(pivot_search))
+
+    # Reject NaN/infinite and small pivots. abs(max) == inf is detected by max-max => NaN.
+    elimination += _local_get(maximum) + _local_get(maximum) + b"\xa1" + _local_set(candidate)
+    elimination += _local_get(maximum) + _local_get(maximum) + b"\x62\x04\x40" + i32(2) + b"\x0f\x0b"
+    elimination += _local_get(candidate) + _local_get(candidate) + b"\x62\x04\x40" + i32(2) + b"\x0f\x0b"
+    elimination += _local_get(maximum) + _local_get(3) + b"\x65\x04\x40" + i32(1) + b"\x0f\x0b"
+
+    # Swap complete matrix rows and RHS when pivot != k.
+    swap = bytearray(i32(0) + _local_set(column))
+    swap_column = bytearray()
+    swap_column += matrix_load(k, column) + _local_set(temporary)
+    swap_column += address(k, column) + matrix_load(pivot, column) + _store(_F64, 0)
+    swap_column += address(pivot, column) + _local_get(temporary) + _store(_F64, 0)
+    swap_column += increment(column)
+    swap += while_loop(_local_get(column) + _local_get(2) + b"\x4f", bytes(swap_column))
+    swap += rhs_load(k) + _local_set(temporary)
+    swap += rhs_address(k) + rhs_load(pivot) + _store(_F64, 0)
+    swap += rhs_address(pivot) + _local_get(temporary) + _store(_F64, 0)
+    elimination += _local_get(pivot) + _local_get(k) + b"\x47\x04\x40" + swap + b"\x0b"
+
+    # Eliminate rows below the pivot.
+    elimination += _local_get(k) + i32(1) + b"\x6a" + _local_set(row)
+    eliminate_row = bytearray()
+    eliminate_row += matrix_load(row, k) + matrix_load(k, k) + b"\xa3" + _local_set(factor)
+    eliminate_row += address(row, k) + _local_get(factor) + _store(_F64, 0)
+    eliminate_row += _local_get(k) + i32(1) + b"\x6a" + _local_set(column)
+    eliminate_column = bytearray()
+    eliminate_column += address(row, column) + matrix_load(row, column)
+    eliminate_column += _local_get(factor) + matrix_load(k, column) + b"\xa2\xa1" + _store(_F64, 0)
+    eliminate_column += increment(column)
+    eliminate_row += while_loop(_local_get(column) + _local_get(2) + b"\x4f", bytes(eliminate_column))
+    eliminate_row += rhs_address(row) + rhs_load(row) + _local_get(factor) + rhs_load(k) + b"\xa2\xa1" + _store(_F64, 0)
+    eliminate_row += increment(row)
+    elimination += while_loop(_local_get(row) + _local_get(2) + b"\x4f", bytes(eliminate_row))
+    elimination += increment(k)
+    code += while_loop(_local_get(k) + _local_get(2) + b"\x4f", bytes(elimination))
+
+    # Back substitution, with signed row >= 0 loop condition.
+    code += _local_get(2) + i32(1) + b"\x6b" + _local_set(row)
+    back_row = bytearray(rhs_load(row) + _local_set(temporary))
+    back_row += _local_get(row) + i32(1) + b"\x6a" + _local_set(column)
+    back_column = bytearray()
+    back_column += _local_get(temporary) + matrix_load(row, column) + rhs_load(column) + b"\xa2\xa1" + _local_set(temporary)
+    back_column += increment(column)
+    back_row += while_loop(_local_get(column) + _local_get(2) + b"\x4f", bytes(back_column))
+    back_row += rhs_address(row) + _local_get(temporary) + matrix_load(row, row) + b"\xa3" + _store(_F64, 0)
+    back_row += _local_get(row) + i32(1) + b"\x6b" + _local_set(row)
+    code += while_loop(_local_get(row) + i32(0) + b"\x48", bytes(back_row))
+    code += i32(0) + b"\x0f"
+
+    arguments = (
+        WasmArgument("matrix", "i32", "input"),
+        WasmArgument("right_hand_side", "i32", "input"),
+        WasmArgument("dimension", "i32", "input"),
+        WasmArgument("pivot_tolerance", "f64", "input"),
+    )
+    return NativeWasmFunction(
+        abi=WasmFunction(name, arguments, "i32"),
+        parameters=(_I32, _I32, _I32, _F64),
+        results=(_I32,),
+        locals=(_I32, _I32, _I32, _I32, _F64, _F64, _F64, _F64),
+        instructions=bytes(code),
+    )
 
 
 def _function_signature(

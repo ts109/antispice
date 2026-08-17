@@ -1,33 +1,33 @@
 """Tests for direct WebAssembly code generation."""
 
-import json
 import math
-import pathlib
-import shutil
-import subprocess
-import tempfile
+import struct
 import unittest
 
 import wrenfold
+from wasmtime import Engine, Func, Instance, Memory, Module, Store
 from wrenfold import sym
 
 import antispice
 
 
-def _run_node(module: bytes, program: str) -> object:
-    node = shutil.which("node")
-    if node is None:
-        raise unittest.SkipTest("Node.js is required to execute WebAssembly tests")
-    with tempfile.TemporaryDirectory() as directory:
-        module_path = pathlib.Path(directory) / "module.wasm"
-        module_path.write_bytes(module)
-        result = subprocess.run(
-            [node, "-e", program, str(module_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    return json.loads(result.stdout)
+def _instantiate(module: bytes, imports: dict[str, object] | None = None) -> tuple[Store, Instance]:
+    engine = Engine()
+    compiled = Module(engine, module)
+    store = Store(engine)
+    functions = []
+    for imported in compiled.imports:
+        callback = (imports or {})[f"{imported.module}.{imported.name}"]
+        functions.append(Func(store, imported.type, callback))
+    return store, Instance(store, compiled, functions)
+
+
+def _write_f64(memory: Memory, store: Store, offset: int, values: list[float]) -> None:
+    memory.write(store, struct.pack(f"<{len(values)}d", *values), offset)
+
+
+def _read_f64(memory: Memory, store: Store, offset: int, count: int) -> list[float]:
+    return list(struct.unpack(f"<{count}d", memory.read(store, offset, offset + count * 8)))
 
 
 class WasmGeneratorTest(unittest.TestCase):
@@ -52,18 +52,9 @@ class WasmGeneratorTest(unittest.TestCase):
         self.assertEqual(generator.abi[0].name, "scalar")
         self.assertEqual(generator.abi[0].return_type, "f64")
 
-        values = _run_node(
-            module,
-            """
-const fs = require("fs");
-const imports = {math: {sin: Math.sin}};
-WebAssembly.instantiate(fs.readFileSync(process.argv[1]), imports)
-  .then(({instance}) => console.log(JSON.stringify([
-    instance.exports.scalar(2, 3),
-    instance.exports.scalar(-2, 12),
-  ])));
-""",
-        )
+        store, instance = _instantiate(module, {"math.sin": math.sin})
+        scalar = instance.exports(store)["scalar"]
+        values = [scalar(store, 2.0, 3.0), scalar(store, -2.0, 12.0)]
         self.assertAlmostEqual(values[0], math.sin(2) + 6)
         self.assertAlmostEqual(values[1], math.sqrt(12) / 3)
 
@@ -78,25 +69,70 @@ WebAssembly.instantiate(fs.readFileSync(process.argv[1]), imports)
         self.assertEqual((arguments[0].rows, arguments[0].cols), (2, 1))
         self.assertEqual(arguments[1].direction, "output")
 
-        values = _run_node(
-            module,
-            """
-const fs = require("fs");
-WebAssembly.instantiate(fs.readFileSync(process.argv[1]))
-  .then(({instance}) => {
-    const values = new Float64Array(instance.exports.memory.buffer);
-    values[0] = 1.5;
-    values[1] = -2;
-    instance.exports.scale(0, 16);
-    console.log(JSON.stringify([values[2], values[3]]));
-  });
-""",
-        )
+        store, instance = _instantiate(module)
+        exports = instance.exports(store)
+        memory = exports["memory"]
+        _write_f64(memory, store, 0, [1.5, -2])
+        exports["scale"](store, 0, 16)
+        values = _read_f64(memory, store, 16, 2)
         self.assertEqual(values, [3, -4])
 
 
 class WasmRadauTest(unittest.TestCase):
     """Exercise the WebAssembly backend with the complete Radau solver."""
+
+    def test_dense_lu_uses_partial_pivoting_and_reports_singular_matrices(self) -> None:
+        """The native numerical solver swaps rows and returns useful status codes."""
+        module = antispice.WasmGenerator().generate(antispice.dense_lu_solve_function())
+        store, instance = _instantiate(module)
+        exports = instance.exports(store)
+        memory = exports["memory"]
+        solve = exports["dense_lu_solve"]
+        _write_f64(memory, store, 0, [0, 2, 1, 3, 4, 7])
+        self.assertEqual(solve(store, 0, 32, 2, 1e-14), 0)
+        solution = _read_f64(memory, store, 32, 2)
+        self.assertAlmostEqual(solution[0], 1)
+        self.assertAlmostEqual(solution[1], 2)
+
+        _write_f64(memory, store, 0, [1, 2, 2, 4, 1, 2])
+        self.assertEqual(solve(store, 0, 32, 2, 1e-14), 1)
+
+        _write_f64(memory, store, 0, [math.nan, 0, 0, 1, 1, 1])
+        self.assertEqual(solve(store, 0, 32, 2, 1e-14), 2)
+
+    def test_stationary_evaluator_finds_dc_operating_point(self) -> None:
+        """Newton iterations solve the original DAE with all derivatives zero."""
+        circuit = antispice.Circuit(
+            elements={
+                "V1": antispice.Element("voltage-source", ("0", "output"), {"voltage": 5}),
+                "R1": antispice.Element("resistor", ("output", "0"), {"resistance": 1_000}),
+            }
+        )
+        system = antispice.compile_circuit(circuit)
+        layout = antispice.radau_memory_layout(system)
+        store, instance = _instantiate(antispice.generate_wasm_radau_solver(system))
+        exports = instance.exports(store)
+        memory = exports["memory"]
+        state = [0.0] * len(system.state)
+
+        for _ in range(10):
+            _write_f64(memory, store, layout.previous_state, state)
+            exports["stationary_evaluate"](
+                store,
+                layout.previous_state,
+                0.0,
+                layout.residual,
+                layout.jacobian,
+            )
+            self.assertEqual(exports["dense_lu_solve"](store, layout.jacobian, layout.residual, len(state), 1e-14), 0)
+            correction = _read_f64(memory, store, layout.residual, len(state))
+            updated = [value - delta for value, delta in zip(state, correction, strict=True)]
+            if max(abs(after - before) for after, before in zip(updated, state, strict=True)) <= 1e-10:
+                state = updated
+                break
+            state = updated
+
+        self.assertAlmostEqual(state[system.layout.potential_index("output")], 5)
 
     def test_generated_solver_integrates_rc_step_response(self) -> None:
         circuit = antispice.Circuit(
@@ -113,30 +149,45 @@ class WasmRadauTest(unittest.TestCase):
         system = antispice.compile_circuit(circuit)
         module = antispice.generate_wasm_radau_solver(system)
 
-        values = _run_node(
-            module,
-            """
-const fs = require("fs");
-WebAssembly.instantiate(fs.readFileSync(process.argv[1]))
-  .then(({instance}) => {
-    const values = new Float64Array(instance.exports.memory.buffer);
-    const stage = 0;
-    const previous = 80;
-    const updated = 120;
-    const next = 200;
-    for (let step = 0; step < 10; ++step) {
-      instance.exports.radau_newton_step(
-        stage, step * 1e-4, 1e-4, previous, updated, next);
-      values.copyWithin(stage / 8, updated / 8, updated / 8 + 10);
-      values.copyWithin(previous / 8, next / 8, next / 8 + 5);
-    }
-    console.log(JSON.stringify(Array.from(
-      values.slice(previous / 8, previous / 8 + 5))));
-  });
-""",
-        )
+        store, instance = _instantiate(module)
+        exports = instance.exports(store)
+        memory = exports["memory"]
+        evaluate = exports["radau_evaluate"]
+        solve = exports["dense_lu_solve"]
+        layout = antispice.radau_memory_layout(system)
+        state_size = len(system.state)
+        newton_size = 2 * state_size
+        stage = [0.0] * newton_size
+        state = [0.0] * state_size
+        step_size = 1e-4
+
+        for step_index in range(10):
+            _write_f64(memory, store, layout.previous_state, state)
+            for _ in range(10):
+                _write_f64(memory, store, layout.stage_derivatives, stage)
+                evaluate(
+                    store,
+                    layout.stage_derivatives,
+                    step_index * step_size,
+                    step_size,
+                    layout.previous_state,
+                    layout.residual,
+                    layout.jacobian,
+                )
+                self.assertEqual(solve(store, layout.jacobian, layout.residual, newton_size, 1e-14), 0)
+                correction = _read_f64(memory, store, layout.residual, newton_size)
+                updated = [value - delta for value, delta in zip(stage, correction, strict=True)]
+                error = max(abs(after - before) for after, before in zip(updated, stage, strict=True))
+                stage = updated
+                if error <= 1e-10:
+                    break
+            state = [
+                state[index] + step_size * (3 / 4 * stage[index] + 1 / 4 * stage[state_size + index])
+                for index in range(state_size)
+            ]
+
         output_index = system.layout.potential_index("output")
-        self.assertAlmostEqual(values[output_index], 1 - math.exp(-1), delta=1e-5)
+        self.assertAlmostEqual(state[output_index], 1 - math.exp(-1), delta=1e-5)
 
 
 if __name__ == "__main__":

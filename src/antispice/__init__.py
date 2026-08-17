@@ -23,10 +23,12 @@ from .compiler import (
     generate_python_radau_solver,
     generate_wasm_radau_solver,
     radau_memory_layout,
+    transpile_radau_evaluator,
     transpile_radau_newton_step,
+    transpile_stationary_evaluator,
 )
 from .javascript import generate_javascript_radau_wrapper
-from .wasm import WasmArgument, WasmFunction, WasmGenerator, generate_wasm
+from .wasm import NativeWasmFunction, WasmArgument, WasmFunction, WasmGenerator, dense_lu_solve_function, generate_wasm
 
 __all__ = [
     "BUILTIN_LIBRARY",
@@ -39,6 +41,7 @@ __all__ = [
     "EquationSystem",
     "Expression",
     "Model",
+    "NativeWasmFunction",
     "NodeReference",
     "Part",
     "RadauMemoryLayout",
@@ -48,11 +51,14 @@ __all__ = [
     "WasmFunction",
     "WasmGenerator",
     "compile_circuit",
+    "dense_lu_solve_function",
     "discretize_radau_iia",
     "generate_javascript_radau_wrapper",
     "generate_python_radau_solver",
     "generate_wasm",
     "generate_wasm_radau_solver",
     "radau_memory_layout",
+    "transpile_radau_evaluator",
     "transpile_radau_newton_step",
+    "transpile_stationary_evaluator",
 ]

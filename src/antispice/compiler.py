@@ -79,6 +79,8 @@ class RadauMemoryLayout:
     previous_state: int
     updated_stage_derivatives: int
     next_state: int
+    residual: int
+    jacobian: int
     byte_length: int
 
 
@@ -89,12 +91,16 @@ def radau_memory_layout(system: EquationSystem) -> RadauMemoryLayout:
     previous_state = stage_derivatives + 2 * state_size * 8
     updated_stage_derivatives = previous_state + state_size * 8
     next_state = updated_stage_derivatives + 2 * state_size * 8
+    residual = next_state + state_size * 8
+    jacobian = residual + 2 * state_size * 8
     return RadauMemoryLayout(
         stage_derivatives=stage_derivatives,
         previous_state=previous_state,
         updated_stage_derivatives=updated_stage_derivatives,
         next_state=next_state,
-        byte_length=next_state + state_size * 8,
+        residual=residual,
+        jacobian=jacobian,
+        byte_length=jacobian + (2 * state_size) ** 2 * 8,
     )
 
 
@@ -276,6 +282,61 @@ def transpile_radau_newton_step(step: RadauStepSystem, *, function_name: str = "
     return wrenfold.code_generation.transpile(description)
 
 
+def transpile_radau_evaluator(step: RadauStepSystem, *, function_name: str = "radau_evaluate") -> typing.Any:
+    """Create Wrenfold IR that evaluates a Radau residual and Jacobian."""
+    size = len(step.stage_derivatives)
+    residual = _column(step.equations)
+    jacobian = wrenfold.sym.jacobian(step.equations, step.stage_derivatives)
+    description = wrenfold.FunctionDescription(function_name)
+    input_derivatives = description.add_input_argument(
+        "stage_derivatives",
+        wrenfold.type_info.MatrixType(rows=size, cols=1),
+    )
+    input_time = description.add_input_argument(
+        "t0",
+        wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float),
+    )
+    input_step = description.add_input_argument(
+        "h",
+        wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float),
+    )
+    input_state = description.add_input_argument(
+        "previous_state",
+        wrenfold.type_info.MatrixType(rows=len(step.previous_state), cols=1),
+    )
+    replacements = [
+        *zip(step.stage_derivatives, input_derivatives, strict=True),
+        *zip(step.previous_state, input_state, strict=True),
+        (step.time_start, input_time),
+        (step.step_size, input_step),
+    ]
+    description.add_output_argument("residual", is_optional=False, value=residual.subs(replacements))
+    description.add_output_argument("jacobian", is_optional=False, value=jacobian.subs(replacements))
+    return wrenfold.code_generation.transpile(description)
+
+
+def transpile_stationary_evaluator(system: EquationSystem, *, function_name: str = "stationary_evaluate") -> typing.Any:
+    """Create Wrenfold IR for ``F(t, x, 0)`` and its state Jacobian."""
+    residual = _column(system.equations).subs(list(zip(system.state_derivative, [0] * len(system.state_derivative), strict=True)))
+    jacobian = wrenfold.sym.jacobian(residual, system.state)
+    description = wrenfold.FunctionDescription(function_name)
+    input_state = description.add_input_argument(
+        "state",
+        wrenfold.type_info.MatrixType(rows=len(system.state), cols=1),
+    )
+    input_time = description.add_input_argument(
+        "time",
+        wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float),
+    )
+    replacements = [
+        *zip(system.state, input_state, strict=True),
+        (system.time, input_time),
+    ]
+    description.add_output_argument("residual", is_optional=False, value=residual.subs(replacements))
+    description.add_output_argument("jacobian", is_optional=False, value=jacobian.subs(replacements))
+    return wrenfold.code_generation.transpile(description)
+
+
 def generate_python_radau_solver(
     system: EquationSystem,
     *,
@@ -291,18 +352,20 @@ def generate_python_radau_solver(
 def generate_wasm_radau_solver(
     system: EquationSystem,
     *,
-    function_name: str = "radau_newton_step",
+    function_name: str = "radau_evaluate",
     memory_pages: int = 1,
 ) -> bytes:
     """Generate a WebAssembly binary containing the Radau Newton update."""
-    from .wasm import WasmGenerator
+    from .wasm import WasmGenerator, dense_lu_solve_function
 
     if memory_pages < 1:
         raise ValueError("memory_pages must be positive")
     required_pages = (radau_memory_layout(system).byte_length + 65_535) // 65_536
     step = discretize_radau_iia(system)
-    function = transpile_radau_newton_step(step, function_name=function_name)
-    return WasmGenerator(memory_pages=max(memory_pages, required_pages)).generate(function)
+    evaluator = transpile_radau_evaluator(step, function_name=function_name)
+    stationary = transpile_stationary_evaluator(system)
+    solver = dense_lu_solve_function()
+    return WasmGenerator(memory_pages=max(memory_pages, required_pages)).generate((evaluator, stationary, solver))
 
 
 def _ordered_nodes(circuit: Circuit) -> tuple[str, ...]:
