@@ -89,6 +89,12 @@ class RadauMemoryLayout:
     residual: int
     jacobian: int
     auxiliary_values: int
+    ac_state_jacobian: int
+    ac_derivative_jacobian: int
+    ac_auxiliary_state_jacobian: int
+    ac_auxiliary_derivative_jacobian: int
+    ac_matrix: int
+    ac_rhs: int
     byte_length: int
 
 
@@ -102,6 +108,13 @@ def radau_memory_layout(system: EquationSystem) -> RadauMemoryLayout:
     residual = next_state + state_size * 8
     jacobian = residual + 2 * state_size * 8
     auxiliary_values = jacobian + (2 * state_size) ** 2 * 8
+    ac_state_jacobian = auxiliary_values + len(system.auxiliaries) * 8
+    ac_derivative_jacobian = ac_state_jacobian + state_size**2 * 8
+    ac_auxiliary_state_jacobian = ac_derivative_jacobian + state_size**2 * 8
+    ac_auxiliary_derivative_jacobian = ac_auxiliary_state_jacobian + len(system.auxiliaries) * state_size * 8
+    ac_matrix = ac_auxiliary_derivative_jacobian + len(system.auxiliaries) * state_size * 8
+    ac_dimension = 2 * (state_size + 1)
+    ac_rhs = ac_matrix + ac_dimension**2 * 8
     return RadauMemoryLayout(
         stage_derivatives=stage_derivatives,
         previous_state=previous_state,
@@ -110,7 +123,13 @@ def radau_memory_layout(system: EquationSystem) -> RadauMemoryLayout:
         residual=residual,
         jacobian=jacobian,
         auxiliary_values=auxiliary_values,
-        byte_length=auxiliary_values + len(system.auxiliaries) * 8,
+        ac_state_jacobian=ac_state_jacobian,
+        ac_derivative_jacobian=ac_derivative_jacobian,
+        ac_auxiliary_state_jacobian=ac_auxiliary_state_jacobian,
+        ac_auxiliary_derivative_jacobian=ac_auxiliary_derivative_jacobian,
+        ac_matrix=ac_matrix,
+        ac_rhs=ac_rhs,
+        byte_length=ac_rhs + ac_dimension * 8,
     )
 
 
@@ -368,6 +387,35 @@ def transpile_auxiliary_evaluator(system: EquationSystem, *, function_name: str 
     return wrenfold.code_generation.transpile(description)
 
 
+def transpile_ac_linearizer(system: EquationSystem, *, function_name: str = "ac_linearize") -> typing.Any:
+    """Create Wrenfold IR for the stationary DAE state and derivative Jacobians."""
+    derivative_zeros = list(zip(system.state_derivative, [0] * len(system.state_derivative), strict=True))
+    state_jacobian = wrenfold.sym.jacobian(system.equations, system.state).subs(derivative_zeros)
+    derivative_jacobian = wrenfold.sym.jacobian(system.equations, system.state_derivative).subs(derivative_zeros)
+    description = wrenfold.FunctionDescription(function_name)
+    input_state = description.add_input_argument("state", wrenfold.type_info.MatrixType(rows=len(system.state), cols=1))
+    input_time = description.add_input_argument("time", wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float))
+    replacements = [*zip(system.state, input_state, strict=True), (system.time, input_time)]
+    description.add_output_argument("state_jacobian", is_optional=False, value=state_jacobian.subs(replacements))
+    description.add_output_argument("derivative_jacobian", is_optional=False, value=derivative_jacobian.subs(replacements))
+    return wrenfold.code_generation.transpile(description)
+
+
+def transpile_ac_auxiliary_linearizer(system: EquationSystem, *, function_name: str = "ac_auxiliary_linearize") -> typing.Any:
+    """Create Wrenfold IR for named auxiliary small-signal output Jacobians."""
+    values = tuple(system.auxiliaries.values())
+    derivative_zeros = list(zip(system.state_derivative, [0] * len(system.state_derivative), strict=True))
+    state_jacobian = wrenfold.sym.jacobian(values, system.state).subs(derivative_zeros)
+    derivative_jacobian = wrenfold.sym.jacobian(values, system.state_derivative).subs(derivative_zeros)
+    description = wrenfold.FunctionDescription(function_name)
+    input_state = description.add_input_argument("state", wrenfold.type_info.MatrixType(rows=len(system.state), cols=1))
+    input_time = description.add_input_argument("time", wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float))
+    replacements = [*zip(system.state, input_state, strict=True), (system.time, input_time)]
+    description.add_output_argument("state_jacobian", is_optional=False, value=state_jacobian.subs(replacements))
+    description.add_output_argument("derivative_jacobian", is_optional=False, value=derivative_jacobian.subs(replacements))
+    return wrenfold.code_generation.transpile(description)
+
+
 def generate_python_radau_solver(
     system: EquationSystem,
     *,
@@ -395,8 +443,10 @@ def generate_wasm_radau_solver(
     evaluator = transpile_radau_evaluator(step, function_name=function_name)
     stationary = transpile_stationary_evaluator(system)
     auxiliaries = transpile_auxiliary_evaluator(system) if system.auxiliaries else None
+    ac = transpile_ac_linearizer(system)
+    ac_auxiliaries = transpile_ac_auxiliary_linearizer(system) if system.auxiliaries else None
     solver = dense_lu_solve_function()
-    functions = tuple(item for item in (evaluator, stationary, auxiliaries, solver) if item is not None)
+    functions = tuple(item for item in (evaluator, stationary, auxiliaries, ac, ac_auxiliaries, solver) if item is not None)
     return WasmGenerator(memory_pages=max(memory_pages, required_pages)).generate(functions)
 
 

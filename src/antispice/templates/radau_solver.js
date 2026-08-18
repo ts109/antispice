@@ -5,6 +5,7 @@ const POTENTIAL_INDICES = Object.freeze(__POTENTIALS__);
 const CURRENT_INDICES = Object.freeze(__CURRENTS__);
 const AUXILIARY_INDICES = Object.freeze(__AUXILIARIES__);
 const AUXILIARY_COUNT = __AUXILIARY_COUNT__;
+const AC_CASES = Object.freeze(__AC_CASES__);
 const POTENTIAL_COUNT = Object.keys(POTENTIAL_INDICES).length;
 const OFFSETS = Object.freeze({
   stageDerivatives: __STAGE_DERIVATIVES__,
@@ -14,6 +15,12 @@ const OFFSETS = Object.freeze({
   residual: __RESIDUAL__,
   jacobian: __JACOBIAN__,
   auxiliaryValues: __AUXILIARY_VALUES__,
+  acStateJacobian: __AC_STATE_JACOBIAN__,
+  acDerivativeJacobian: __AC_DERIVATIVE_JACOBIAN__,
+  acAuxiliaryStateJacobian: __AC_AUXILIARY_STATE_JACOBIAN__,
+  acAuxiliaryDerivativeJacobian: __AC_AUXILIARY_DERIVATIVE_JACOBIAN__,
+  acMatrix: __AC_MATRIX__,
+  acRhs: __AC_RHS__,
 });
 
 const DEFAULT_MATH_IMPORTS = Object.freeze({
@@ -122,6 +129,8 @@ export class __CLASS_NAME__ {
     this._stepFunction = instance.exports[FUNCTION_NAME];
     this._stationaryFunction = instance.exports.stationary_evaluate;
     this._auxiliaryFunction = instance.exports.evaluate_auxiliaries;
+    this._acLinearize = instance.exports.ac_linearize;
+    this._acAuxiliaryLinearize = instance.exports.ac_auxiliary_linearize;
     this._linearSolve = instance.exports.dense_lu_solve;
     if (!(this.memory instanceof WebAssembly.Memory)) {
       throw new TypeError("The WebAssembly module does not export memory");
@@ -137,6 +146,12 @@ export class __CLASS_NAME__ {
     }
     if (AUXILIARY_COUNT && typeof this._auxiliaryFunction !== "function") {
       throw new TypeError("The WebAssembly module does not export evaluate_auxiliaries");
+    }
+    if (typeof this._acLinearize !== "function") {
+      throw new TypeError("The WebAssembly module does not export ac_linearize");
+    }
+    if (AUXILIARY_COUNT && typeof this._acAuxiliaryLinearize !== "function") {
+      throw new TypeError("The WebAssembly module does not export ac_auxiliary_linearize");
     }
     this._buffer = null;
     this.vectors = null;
@@ -163,6 +178,12 @@ export class __CLASS_NAME__ {
       residual: new Float64Array(this._buffer, OFFSETS.residual, 2 * STATE_SIZE),
       jacobian: new Float64Array(this._buffer, OFFSETS.jacobian, 4 * STATE_SIZE * STATE_SIZE),
       auxiliaryValues: new Float64Array(this._buffer, OFFSETS.auxiliaryValues, AUXILIARY_COUNT),
+      acStateJacobian: new Float64Array(this._buffer, OFFSETS.acStateJacobian, STATE_SIZE * STATE_SIZE),
+      acDerivativeJacobian: new Float64Array(this._buffer, OFFSETS.acDerivativeJacobian, STATE_SIZE * STATE_SIZE),
+      acAuxiliaryStateJacobian: new Float64Array(this._buffer, OFFSETS.acAuxiliaryStateJacobian, AUXILIARY_COUNT * STATE_SIZE),
+      acAuxiliaryDerivativeJacobian: new Float64Array(this._buffer, OFFSETS.acAuxiliaryDerivativeJacobian, AUXILIARY_COUNT * STATE_SIZE),
+      acMatrix: new Float64Array(this._buffer, OFFSETS.acMatrix, 4 * (STATE_SIZE + 1) * (STATE_SIZE + 1)),
+      acRhs: new Float64Array(this._buffer, OFFSETS.acRhs, 2 * (STATE_SIZE + 1)),
     });
   }
 
@@ -180,6 +201,104 @@ export class __CLASS_NAME__ {
       OFFSETS.auxiliaryValues,
     );
     return this.vectors.auxiliaryValues;
+  }
+
+  initializeAC(time, options = {}) {
+    const operatingPoint = this.initializeOperatingPoint(time, options);
+    this._acLinearize(
+      OFFSETS.state,
+      time,
+      OFFSETS.acStateJacobian,
+      OFFSETS.acDerivativeJacobian,
+    );
+    if (AUXILIARY_COUNT) {
+      this._acAuxiliaryLinearize(
+        OFFSETS.state,
+        time,
+        OFFSETS.acAuxiliaryStateJacobian,
+        OFFSETS.acAuxiliaryDerivativeJacobian,
+      );
+    }
+    return operatingPoint;
+  }
+
+  solveAC(caseIndex, frequency, pivotTolerance = 1e-14) {
+    const analysisCase = AC_CASES[caseIndex];
+    if (!analysisCase) throw new RangeError(`Unknown AC analysis case: ${caseIndex}`);
+    if (!Number.isFinite(frequency) || !(frequency > 0)) throw new RangeError("AC frequency must be positive and finite");
+    const voltageDrive = analysisCase.type === "voltage";
+    const complexSize = STATE_SIZE + (voltageDrive ? 1 : 0);
+    const realSize = 2 * complexSize;
+    const omega = 2 * Math.PI * frequency;
+    const matrix = this.vectors.acMatrix;
+    const rhs = this.vectors.acRhs;
+    matrix.fill(0, 0, realSize * realSize);
+    rhs.fill(0, 0, realSize);
+    for (let row = 0; row < STATE_SIZE; ++row) {
+      for (let column = 0; column < STATE_SIZE; ++column) {
+        const index = row * STATE_SIZE + column;
+        const stateValue = this.vectors.acStateJacobian[index];
+        const derivativeValue = omega * this.vectors.acDerivativeJacobian[index];
+        matrix[row * realSize + column] = stateValue;
+        matrix[row * realSize + complexSize + column] = -derivativeValue;
+        matrix[(complexSize + row) * realSize + column] = derivativeValue;
+        matrix[(complexSize + row) * realSize + complexSize + column] = stateValue;
+      }
+    }
+    const netIndex = POTENTIAL_INDICES[analysisCase.net];
+    if (netIndex === undefined) throw new RangeError(`Unknown AC input net: ${analysisCase.net}`);
+    if (voltageDrive) {
+      const branch = STATE_SIZE;
+      matrix[netIndex * realSize + branch] = -1;
+      matrix[branch * realSize + netIndex] = 1;
+      matrix[(complexSize + netIndex) * realSize + complexSize + branch] = -1;
+      matrix[(complexSize + branch) * realSize + complexSize + netIndex] = 1;
+      rhs[branch] = 1;
+    } else {
+      rhs[netIndex] = 1;
+    }
+    const status = this._linearSolve(OFFSETS.acMatrix, OFFSETS.acRhs, realSize, pivotTolerance);
+    if (status === 1) throw new Error(`AC matrix is singular or ill-conditioned at f=${frequency}`);
+    if (status !== 0) throw new Error(`AC matrix contains a non-finite pivot at f=${frequency}`);
+    const real = Float64Array.from(rhs.subarray(0, STATE_SIZE));
+    const imaginary = Float64Array.from(rhs.subarray(complexSize, complexSize + STATE_SIZE));
+    const auxiliaryReal = new Float64Array(AUXILIARY_COUNT);
+    const auxiliaryImaginary = new Float64Array(AUXILIARY_COUNT);
+    for (let output = 0; output < AUXILIARY_COUNT; ++output) {
+      for (let state = 0; state < STATE_SIZE; ++state) {
+        const index = output * STATE_SIZE + state;
+        const c = this.vectors.acAuxiliaryStateJacobian[index];
+        const d = omega * this.vectors.acAuxiliaryDerivativeJacobian[index];
+        auxiliaryReal[output] += c * real[state] - d * imaginary[state];
+        auxiliaryImaginary[output] += c * imaginary[state] + d * real[state];
+      }
+    }
+    return {real, imaginary, auxiliaryReal, auxiliaryImaginary};
+  }
+
+  sweepAC(caseIndex, frequencies, options = {}) {
+    const count = frequencies.length;
+    const realStates = new Float64Array(count * STATE_SIZE);
+    const imaginaryStates = new Float64Array(count * STATE_SIZE);
+    const auxiliaryReal = new Float64Array(count * AUXILIARY_COUNT);
+    const auxiliaryImaginary = new Float64Array(count * AUXILIARY_COUNT);
+    for (let sample = 0; sample < count; ++sample) {
+      const result = this.solveAC(caseIndex, frequencies[sample], options.pivotTolerance);
+      realStates.set(result.real, sample * STATE_SIZE);
+      imaginaryStates.set(result.imaginary, sample * STATE_SIZE);
+      auxiliaryReal.set(result.auxiliaryReal, sample * AUXILIARY_COUNT);
+      auxiliaryImaginary.set(result.auxiliaryImaginary, sample * AUXILIARY_COUNT);
+    }
+    return {
+      frequencies,
+      sampleCount: count,
+      stateSize: STATE_SIZE,
+      auxiliaryCount: AUXILIARY_COUNT,
+      realStates,
+      imaginaryStates,
+      auxiliaryReal,
+      auxiliaryImaginary,
+    };
   }
 
   initializeOperatingPoint(time, options = {}) {
@@ -608,5 +727,6 @@ export const circuitLayout = Object.freeze({
   potentials: POTENTIAL_INDICES,
   currents: CURRENT_INDICES,
   auxiliaries: AUXILIARY_INDICES,
+  acCases: AC_CASES,
   offsets: OFFSETS,
 });

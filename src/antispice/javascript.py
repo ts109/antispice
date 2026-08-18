@@ -3,6 +3,7 @@
 import json
 import re
 from importlib.resources import files
+from typing import Any
 
 from .compiler import EquationSystem, radau_memory_layout
 
@@ -12,6 +13,7 @@ def generate_javascript_radau_wrapper(
     *,
     class_name: str = "AntispiceSolver",
     function_name: str = "radau_evaluate",
+    ac_cases: list[dict[str, Any]] | None = None,
 ) -> str:
     """Generate an ES module wrapping the flattened WebAssembly solver ABI."""
     if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", class_name) is None:
@@ -41,6 +43,7 @@ def generate_javascript_radau_wrapper(
             ensure_ascii=False,
         ),
         "__AUXILIARY_COUNT__": str(len(system.auxiliaries)),
+        "__AC_CASES__": json.dumps(ac_cases or (), ensure_ascii=False),
         "__STAGE_DERIVATIVES__": str(memory.stage_derivatives),
         "__PREVIOUS_STATE__": str(memory.previous_state),
         "__UPDATED_STAGE_DERIVATIVES__": str(memory.updated_stage_derivatives),
@@ -48,6 +51,12 @@ def generate_javascript_radau_wrapper(
         "__RESIDUAL__": str(memory.residual),
         "__JACOBIAN__": str(memory.jacobian),
         "__AUXILIARY_VALUES__": str(memory.auxiliary_values),
+        "__AC_STATE_JACOBIAN__": str(memory.ac_state_jacobian),
+        "__AC_DERIVATIVE_JACOBIAN__": str(memory.ac_derivative_jacobian),
+        "__AC_AUXILIARY_STATE_JACOBIAN__": str(memory.ac_auxiliary_state_jacobian),
+        "__AC_AUXILIARY_DERIVATIVE_JACOBIAN__": str(memory.ac_auxiliary_derivative_jacobian),
+        "__AC_MATRIX__": str(memory.ac_matrix),
+        "__AC_RHS__": str(memory.ac_rhs),
     }
     for marker, value in replacements.items():
         source = source.replace(marker, value)

@@ -134,6 +134,52 @@ class JavaScriptWrapperTest(unittest.TestCase):
         self.assertIn("times.subarray(0, sampleCount)", wrapper)
         self.assertIn("const targetTime = Math.min", wrapper)
 
+    def test_ac_wrapper_exposes_independent_frequency_sweeps(self) -> None:
+        """Dedicated marker metadata selects one separately solved AC right-hand side."""
+        cases = [
+            {"reference": "AC1", "type": "voltage", "net": "input"},
+            {"reference": "AC2", "type": "current", "net": "output"},
+        ]
+
+        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system(), ac_cases=cases)
+
+        self.assertIn('"reference": "AC1", "type": "voltage", "net": "input"', wrapper)
+        self.assertIn('"reference": "AC2", "type": "current", "net": "output"', wrapper)
+        self.assertIn("initializeAC(time, options = {})", wrapper)
+        self.assertIn("solveAC(caseIndex, frequency", wrapper)
+        self.assertIn("sweepAC(caseIndex, frequencies", wrapper)
+        self.assertIn("const omega = 2 * Math.PI * frequency", wrapper)
+
+    def test_ac_current_marker_solves_rc_impedance(self) -> None:
+        """A marker RHS excites the linearized circuit while its source remains bias-only."""
+        node = shutil.which("node")
+        if node is None:
+            message = "Node.js is required to execute JavaScript tests"
+            raise unittest.SkipTest(message)
+        system = _rc_system()
+        cases = [{"reference": "AC1", "type": "current", "net": "output"}]
+        module = antispice.generate_wasm_radau_solver(system)
+        wrapper = antispice.generate_javascript_radau_wrapper(system, ac_cases=cases)
+        output_index = system.layout.potential_index("output")
+        runner = f"""
+import fs from "node:fs";
+import {{AntispiceSolver}} from "./wrapper.mjs";
+const solver = await AntispiceSolver.instantiate(fs.readFileSync("solver.wasm"));
+solver.initializeAC(0);
+const result = solver.solveAC(0, 1000);
+const omega = 2 * Math.PI * 1000;
+const expectedReal = 0.001 / (0.001 ** 2 + (omega * 1e-6) ** 2);
+const expectedImaginary = -omega * 1e-6 / (0.001 ** 2 + (omega * 1e-6) ** 2);
+if (Math.abs(result.real[{output_index}] - expectedReal) > 1e-9) process.exit(1);
+if (Math.abs(result.imaginary[{output_index}] - expectedImaginary) > 1e-9) process.exit(2);
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = pathlib.Path(directory)
+            (path / "solver.wasm").write_bytes(module)
+            (path / "wrapper.mjs").write_text(wrapper)
+            (path / "runner.mjs").write_text(runner)
+            subprocess.run([node, "runner.mjs"], cwd=path, check=True)
+
     def test_adaptive_wrapper_uses_step_doubling_without_resampling(self) -> None:
         """Adaptive output contains accepted endpoints at their actual times."""
         node = shutil.which("node")
