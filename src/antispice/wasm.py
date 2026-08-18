@@ -614,7 +614,11 @@ def _collect_math_imports(
 
 
 def _math_function_name(function: wrenfold.StdMathFunction) -> str:
-    return function.name.lower()
+    name = function.name
+
+    assert isinstance(name, str)
+
+    return name.lower()
 
 
 def _math_import_signature(name: str) -> tuple[tuple[int, ...], tuple[int, ...]]:
