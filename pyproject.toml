@@ -10,7 +10,9 @@ dependencies = ["wrenfold"]
 requires-python = ">= 3.14"
 
 [project.optional-dependencies]
-test = ["wasmtime"]
+python = ["numpy"]
+sparse = ["numpy", "scipy"]
+test = ["numpy", "scipy", "wasmtime"]
 
 [tool.setuptools.package-data]
 antispice = ["builtin_library.toml", "library/models/*.toml", "library/parts/*.toml", "templates/*.js"]
