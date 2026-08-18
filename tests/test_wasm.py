@@ -9,6 +9,7 @@ from wasmtime import Engine, Func, Instance, Memory, Module, Store
 from wrenfold import sym
 
 import antispice
+from antispice import compiler, wasm, wasm_target
 
 
 def _instantiate(module: bytes, imports: dict[str, object] | None = None) -> tuple[Store, Instance]:
@@ -34,17 +35,17 @@ class WasmGeneratorTest(unittest.TestCase):
     """Test the generic Wrenfold WebAssembly generator."""
 
     def test_generator_is_a_wrenfold_base_generator(self) -> None:
-        generator = antispice.WasmGenerator()
+        generator = wasm.WasmGenerator()
 
         self.assertIsInstance(generator, wrenfold.BaseGenerator)
         with self.assertRaisesRegex(ValueError, "memory_pages"):
-            antispice.WasmGenerator(memory_pages=0)
+            wasm.WasmGenerator(memory_pages=0)
 
     def test_scalar_function_with_branch_and_math_import(self) -> None:
         def scalar(x: wrenfold.FloatScalar, y: wrenfold.FloatScalar) -> wrenfold.FloatScalar:
             return sym.where(x > 0, sym.sin(x) + 2 * y, sym.sqrt(abs(y)) / 3)
 
-        generator = antispice.WasmGenerator()
+        generator = wasm.WasmGenerator()
         module = wrenfold.generate_function(scalar, generator=generator)
 
         self.assertIsInstance(module, bytes)
@@ -62,7 +63,7 @@ class WasmGeneratorTest(unittest.TestCase):
         def scale(x: wrenfold.Vector2) -> wrenfold.OutputArg:
             return wrenfold.OutputArg(2 * x, "result")
 
-        generator = antispice.WasmGenerator()
+        generator = wasm.WasmGenerator()
         module = wrenfold.generate_function(scale, generator=generator)
 
         arguments = generator.abi[0].arguments
@@ -83,7 +84,7 @@ class WasmRadauTest(unittest.TestCase):
 
     def test_dense_lu_uses_partial_pivoting_and_reports_singular_matrices(self) -> None:
         """The native numerical solver swaps rows and returns useful status codes."""
-        module = antispice.WasmGenerator().generate(antispice.dense_lu_solve_function())
+        module = wasm.WasmGenerator().generate(wasm.dense_lu_solve_function())
         store, instance = _instantiate(module)
         exports = instance.exports(store)
         memory = exports["memory"]
@@ -108,9 +109,9 @@ class WasmRadauTest(unittest.TestCase):
                 "R1": antispice.Element("resistor", ("output", "0"), {"resistance": 1_000}),
             }
         )
-        system = antispice.compile_circuit(circuit)
-        layout = antispice.radau_memory_layout(system)
-        store, instance = _instantiate(antispice.generate_wasm_radau_solver(system))
+        system = compiler.compile_circuit(circuit)
+        layout = compiler.radau_memory_layout(system)
+        store, instance = _instantiate(wasm_target.generate_wasm_solver(system))
         exports = instance.exports(store)
         memory = exports["memory"]
         state = [0.0] * len(system.state)
@@ -142,9 +143,9 @@ class WasmRadauTest(unittest.TestCase):
             equations=("I_p",),
             auxiliaries={"scaled": "gain * U_p"},
         )
-        system = antispice.compile_circuit(antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "out"), {"gain": 3})}))
-        layout = antispice.radau_memory_layout(system)
-        store, instance = _instantiate(antispice.generate_wasm_radau_solver(system))
+        system = compiler.compile_circuit(antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "out"), {"gain": 3})}))
+        layout = compiler.radau_memory_layout(system)
+        store, instance = _instantiate(wasm_target.generate_wasm_solver(system))
         exports = instance.exports(store)
         memory = exports["memory"]
         state = [0.0] * len(system.state)
@@ -174,15 +175,15 @@ class WasmRadauTest(unittest.TestCase):
                 "C1": antispice.Element("capacitor", ("0", "output"), {"capacitance": 1e-6}),
             }
         )
-        system = antispice.compile_circuit(circuit)
-        module = antispice.generate_wasm_radau_solver(system)
+        system = compiler.compile_circuit(circuit)
+        module = wasm_target.generate_wasm_solver(system)
 
         store, instance = _instantiate(module)
         exports = instance.exports(store)
         memory = exports["memory"]
         evaluate = exports["radau_evaluate"]
         solve = exports["dense_lu_solve"]
-        layout = antispice.radau_memory_layout(system)
+        layout = compiler.radau_memory_layout(system)
         state_size = len(system.state)
         newton_size = 2 * state_size
         stage = [0.0] * newton_size
@@ -213,6 +214,20 @@ class WasmRadauTest(unittest.TestCase):
 
         output_index = system.layout.potential_index("output")
         self.assertAlmostEqual(state[output_index], 1 - math.exp(-1), delta=1e-5)
+
+    def test_high_level_target_returns_a_complete_host_artifact(self) -> None:
+        circuit = antispice.Circuit(elements={"R1": antispice.Element("resistor", ("0", "out"), {"resistance": 1_000.0})})
+
+        artifact = antispice.compile_wasm(
+            circuit,
+            ac_cases=[{"reference": "AC1", "type": "current", "net": "out"}],
+        )
+
+        self.assertTrue(artifact.module.startswith(b"\0asm"))
+        self.assertIn("export class AntispiceSolver", artifact.javascript)
+        self.assertIn('"reference": "AC1"', artifact.javascript)
+        self.assertEqual(artifact.layout.potentials, {"out": 0})
+        self.assertEqual(artifact.layout.currents, {"R1": {"p": 1}})
 
 
 if __name__ == "__main__":

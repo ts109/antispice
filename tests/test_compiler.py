@@ -1,12 +1,11 @@
 """Tests for circuit interpretation and Radau-IIA solver generation."""
 
-import math
 import unittest
 
-import numpy
 import wrenfold
 
 import antispice
+from antispice import compiler
 
 
 def make_rc_step_circuit() -> antispice.Circuit:
@@ -43,7 +42,7 @@ class CircuitCompilerTest(unittest.TestCase):
                 "squared": "U_p ** 2",
             },
         )
-        system = antispice.compile_circuit(antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "n"), {"gain": 3})}))
+        system = compiler.compile_circuit(antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "n"), {"gain": 3})}))
 
         equation = str(system.equations[-1])
         self.assertNotIn("output", equation)
@@ -68,12 +67,12 @@ class CircuitCompilerTest(unittest.TestCase):
                 circuit = antispice.Circuit(elements={"X1": antispice.Element(model, ("0", "n"))})
 
                 with self.assertRaisesRegex(ValueError, message):
-                    antispice.compile_circuit(circuit)
+                    compiler.compile_circuit(circuit)
 
     def test_builtin_transistor_equations_compile_for_both_polarities(self) -> None:
         for polarity in (-1, 1):
             with self.subTest(device="bjt", polarity=polarity):
-                system = antispice.compile_circuit(
+                system = compiler.compile_circuit(
                     antispice.Circuit(
                         elements={
                             "Q1": antispice.Element(
@@ -93,7 +92,7 @@ class CircuitCompilerTest(unittest.TestCase):
                 self.assertEqual(len(system.equations), len(system.state))
 
             with self.subTest(device="fet", polarity=polarity):
-                system = antispice.compile_circuit(
+                system = compiler.compile_circuit(
                     antispice.Circuit(
                         elements={
                             "M1": antispice.Element(
@@ -112,7 +111,7 @@ class CircuitCompilerTest(unittest.TestCase):
                 self.assertEqual(len(system.equations), len(system.state))
 
     def test_compiler_creates_deterministic_state_layout(self) -> None:
-        system = antispice.compile_circuit(make_rc_step_circuit())
+        system = compiler.compile_circuit(make_rc_step_circuit())
 
         self.assertEqual(system.layout.potentials, {"input": 0, "output": 1})
         self.assertEqual(
@@ -133,7 +132,7 @@ class CircuitCompilerTest(unittest.TestCase):
         )
         circuit = antispice.Circuit(elements={"X1": antispice.Element(model, ("common", "0", "b"))})
 
-        system = antispice.compile_circuit(circuit)
+        system = compiler.compile_circuit(circuit)
         equations = tuple(map(str, system.equations))
 
         self.assertEqual(system.layout.potentials, {"common": 0, "b": 1})
@@ -161,7 +160,7 @@ class CircuitCompilerTest(unittest.TestCase):
             }
         )
 
-        system = antispice.compile_circuit(circuit)
+        system = compiler.compile_circuit(circuit)
 
         self.assertIn("sin", str(system.equations[-1]))
         self.assertIn("t", str(system.equations[-1]))
@@ -170,46 +169,24 @@ class CircuitCompilerTest(unittest.TestCase):
         circuit = antispice.Circuit(elements={"R1": antispice.Element("resistor", ("a", "b"), {"resistance": 10})})
 
         with self.assertRaisesRegex(ValueError, "reference node '0'"):
-            antispice.compile_circuit(circuit)
+            compiler.compile_circuit(circuit)
 
 
 class RadauTest(unittest.TestCase):
     def test_radau_stages_use_one_third_and_end_of_step_times(self) -> None:
         time, state, derivative = wrenfold.sym.make_symbols(["t", "x", "xdot"])
-        system = antispice.EquationSystem(
+        system = compiler.EquationSystem(
             time=time,
             state=(state,),
             state_derivative=(derivative,),
             equations=(time,),
-            layout=antispice.StateLayout({}, {}),
+            layout=compiler.StateLayout({}, {}),
         )
 
-        step = antispice.discretize_radau_iia(system)
+        step = compiler.discretize_radau_iia(system)
 
         self.assertTrue(step.equations[0].is_identical_to(step.time_start + step.step_size / 3))
         self.assertTrue(step.equations[1].is_identical_to(step.time_start + step.step_size))
-
-    def test_generated_python_solver_integrates_rc_step_response(self) -> None:
-        system = antispice.compile_circuit(make_rc_step_circuit())
-        source = antispice.generate_python_radau_solver(system)
-        namespace: dict[str, object] = {}
-        exec(source, namespace)
-        solver = namespace["radau_newton_step"]
-
-        state = numpy.zeros(len(system.state))
-        stage_derivatives = numpy.zeros(2 * len(system.state))
-        step_size = 1e-4
-        for step_index in range(10):
-            stage_derivatives, state = solver(
-                stage_derivatives,
-                step_index * step_size,
-                step_size,
-                state,
-            )
-
-        output = state.reshape(-1)[system.layout.potential_index("output")]
-        expected = 1 - math.exp(-1)
-        self.assertAlmostEqual(output, expected, delta=1e-5)
 
 
 class PublicApiTest(unittest.TestCase):
@@ -217,6 +194,17 @@ class PublicApiTest(unittest.TestCase):
         for name in antispice.__all__:
             with self.subTest(name=name):
                 self.assertTrue(hasattr(antispice, name))
+
+    def test_low_level_compiler_names_are_not_package_root_exports(self) -> None:
+        internal_names = {
+            "EquationSystem",
+            "WasmGenerator",
+            "compile_circuit",
+            "generate_python_kernels",
+            "radau_memory_layout",
+            "transpile_radau_evaluator",
+        }
+        self.assertTrue(internal_names.isdisjoint(antispice.__all__))
 
 
 if __name__ == "__main__":

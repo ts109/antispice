@@ -9,9 +9,10 @@ import tempfile
 import unittest
 
 import antispice
+from antispice import compiler, javascript, wasm_target
 
 
-def _rc_system() -> antispice.EquationSystem:
+def _rc_system() -> compiler.EquationSystem:
     circuit = antispice.Circuit(
         elements={
             "V1": antispice.Element(
@@ -31,10 +32,10 @@ def _rc_system() -> antispice.EquationSystem:
             ),
         }
     )
-    return antispice.compile_circuit(circuit)
+    return compiler.compile_circuit(circuit)
 
 
-def _bjt_step_system() -> antispice.EquationSystem:
+def _bjt_step_system() -> compiler.EquationSystem:
     """Construct the nonlinear step-response circuit from the web editor."""
     circuit = antispice.Circuit(
         elements={
@@ -47,10 +48,10 @@ def _bjt_step_system() -> antispice.EquationSystem:
             "Q1": antispice.Element("2n3904", ("emitter", "base", "collector"), {}),
         }
     )
-    return antispice.compile_circuit(circuit)
+    return compiler.compile_circuit(circuit)
 
 
-def _bjt_sine_system() -> antispice.EquationSystem:
+def _bjt_sine_system() -> compiler.EquationSystem:
     """Construct the collector-feedback amplifier used for predictor fallback."""
     circuit = antispice.Circuit(
         elements={
@@ -62,7 +63,7 @@ def _bjt_sine_system() -> antispice.EquationSystem:
             "Q1": antispice.Element("2n3904", ("0", "base", "collector"), {}),
         }
     )
-    return antispice.compile_circuit(circuit)
+    return compiler.compile_circuit(circuit)
 
 
 class JavaScriptWrapperTest(unittest.TestCase):
@@ -72,13 +73,13 @@ class JavaScriptWrapperTest(unittest.TestCase):
         system = _rc_system()
 
         with self.assertRaisesRegex(ValueError, "class name"):
-            antispice.generate_javascript_radau_wrapper(system, class_name="not valid")
+            javascript.generate_javascript_radau_wrapper(system, class_name="not valid")
         with self.assertRaisesRegex(ValueError, "function name"):
-            antispice.generate_javascript_radau_wrapper(system, function_name="not-valid")
+            javascript.generate_javascript_radau_wrapper(system, function_name="not-valid")
 
     def test_operating_point_uses_residual_backtracking(self) -> None:
         """Generated initialization rejects steps until the residual decreases."""
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
 
         self.assertIn("candidateNorm < norm", wrapper)
         self.assertIn("multiplier *= 0.5", wrapper)
@@ -87,7 +88,7 @@ class JavaScriptWrapperTest(unittest.TestCase):
 
     def test_transient_newton_skips_solved_residuals(self) -> None:
         """A stationary circuit does not factor an unnecessary Radau Jacobian."""
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
 
         convergence = wrapper.index("residualNorm <= residualTolerance")
         factorization = wrapper.index("const status = this._linearSolve", convergence)
@@ -95,7 +96,7 @@ class JavaScriptWrapperTest(unittest.TestCase):
 
     def test_transient_newton_uses_residual_backtracking(self) -> None:
         """Every implicit step rejects Newton updates that worsen its residual."""
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
 
         self.assertIn("candidateNorm < residualNorm", wrapper)
         self.assertIn("this._transientPreviousStage", wrapper)
@@ -106,7 +107,7 @@ class JavaScriptWrapperTest(unittest.TestCase):
 
     def test_convergence_errors_include_simulation_time(self) -> None:
         """Generated operating-point and integration errors identify their time."""
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
 
         self.assertIn("Operating-point Newton iteration did not converge at t=${time}", wrapper)
         self.assertIn("Transient solve failed at t=${time + stepSize}", wrapper)
@@ -114,7 +115,7 @@ class JavaScriptWrapperTest(unittest.TestCase):
 
     def test_tolerance_options_are_validated_and_forwarded(self) -> None:
         """IC, transient Newton, and adaptive control share explicit options."""
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
 
         self.assertIn("residualTolerance must be positive and finite", wrapper)
         self.assertIn("relativeTolerance must be positive and finite", wrapper)
@@ -124,7 +125,7 @@ class JavaScriptWrapperTest(unittest.TestCase):
 
     def test_wrapper_can_collect_columnar_results(self) -> None:
         """Plotting output uses contiguous typed arrays instead of snapshot objects."""
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system())
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
 
         self.assertIn("integrateArrays(options)", wrapper)
         self.assertIn("const times = new Float64Array(capacity)", wrapper)
@@ -141,7 +142,7 @@ class JavaScriptWrapperTest(unittest.TestCase):
             {"reference": "AC2", "type": "current", "net": "output"},
         ]
 
-        wrapper = antispice.generate_javascript_radau_wrapper(_rc_system(), ac_cases=cases)
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system(), ac_cases=cases)
 
         self.assertIn('"reference": "AC1", "type": "voltage", "net": "input"', wrapper)
         self.assertIn('"reference": "AC2", "type": "current", "net": "output"', wrapper)
@@ -158,8 +159,8 @@ class JavaScriptWrapperTest(unittest.TestCase):
             raise unittest.SkipTest(message)
         system = _rc_system()
         cases = [{"reference": "AC1", "type": "current", "net": "output"}]
-        module = antispice.generate_wasm_radau_solver(system)
-        wrapper = antispice.generate_javascript_radau_wrapper(system, ac_cases=cases)
+        module = wasm_target.generate_wasm_solver(system)
+        wrapper = javascript.generate_javascript_radau_wrapper(system, ac_cases=cases)
         output_index = system.layout.potential_index("output")
         runner = f"""
 import fs from "node:fs";
@@ -188,8 +189,8 @@ if (Math.abs(result.imaginary[{output_index}] - expectedImaginary) > 1e-9) proce
             raise unittest.SkipTest(message)
 
         system = _rc_system()
-        module = antispice.generate_wasm_radau_solver(system)
-        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        module = wasm_target.generate_wasm_solver(system)
+        wrapper = javascript.generate_javascript_radau_wrapper(system)
         self.assertIn("Math.sqrt(minimumStepSize * maximumStepSize)", wrapper)
         runner = """
 import fs from "node:fs";
@@ -227,8 +228,8 @@ if (!unequal) process.exit(3);
             raise unittest.SkipTest(message)
 
         system = _rc_system()
-        module = antispice.generate_wasm_radau_solver(system)
-        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        module = wasm_target.generate_wasm_solver(system)
+        wrapper = javascript.generate_javascript_radau_wrapper(system)
         input_index = system.layout.potential_index("input")
 
         runner = f"""
@@ -294,8 +295,8 @@ console.log(JSON.stringify({{
             raise unittest.SkipTest(message)
 
         system = _bjt_step_system()
-        module = antispice.generate_wasm_radau_solver(system)
-        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        module = wasm_target.generate_wasm_solver(system)
+        wrapper = javascript.generate_javascript_radau_wrapper(system)
         runner = """
 import fs from "node:fs";
 import {AntispiceSolver} from "./wrapper.mjs";
@@ -320,8 +321,8 @@ if (!first.converged || !second.converged) process.exit(1);
             raise unittest.SkipTest(message)
 
         system = _bjt_sine_system()
-        module = antispice.generate_wasm_radau_solver(system)
-        wrapper = antispice.generate_javascript_radau_wrapper(system)
+        module = wasm_target.generate_wasm_solver(system)
+        wrapper = javascript.generate_javascript_radau_wrapper(system)
         runner = """
 import fs from "node:fs";
 import {AntispiceSolver} from "./wrapper.mjs";

@@ -13,7 +13,6 @@ import wrenfold
 from .circuit import Circuit, Expression
 from .expressions import UnknownName as _UnknownName
 from .expressions import parse_expression as _parse_expression
-from .wasm import WasmGenerator, dense_lu_solve_function
 
 REFERENCE_NODE = "0"
 
@@ -259,60 +258,6 @@ def discretize_radau_iia(system: EquationSystem) -> RadauStepSystem:
     )
 
 
-def transpile_radau_newton_step(step: RadauStepSystem, *, function_name: str = "radau_newton_step") -> typing.Any:
-    """Create Wrenfold IR for one Newton update of one Radau timestep.
-
-    The generated function accepts the current stage-derivative estimate,
-    ``t0``, ``h``, and the previous state.  It returns an improved estimate and
-    the corresponding end-of-step state.  Apply it repeatedly until converged.
-    """
-    residual = _column(step.equations)
-    unknowns = _column(step.stage_derivatives)
-    jacobian = wrenfold.sym.jacobian(step.equations, step.stage_derivatives)
-    updated = unknowns - _solve_lu(jacobian, residual)
-
-    size = len(step.previous_state)
-    derivative_a = updated[:size, :]
-    derivative_b = updated[size:, :]
-    next_state = _column(step.previous_state) + step.step_size * (3 / 4 * derivative_a + 1 / 4 * derivative_b)
-
-    description = wrenfold.FunctionDescription(function_name)
-    input_derivatives = description.add_input_argument(
-        "stage_derivatives",
-        wrenfold.type_info.MatrixType(rows=2 * size, cols=1),
-    )
-    input_time = description.add_input_argument(
-        "t0",
-        wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float),
-    )
-    input_step = description.add_input_argument(
-        "h",
-        wrenfold.type_info.ScalarType(wrenfold.type_info.NumericType.Float),
-    )
-    input_state = description.add_input_argument(
-        "previous_state",
-        wrenfold.type_info.MatrixType(rows=size, cols=1),
-    )
-
-    replacements = [
-        *zip(step.stage_derivatives, input_derivatives, strict=True),
-        *zip(step.previous_state, input_state, strict=True),
-        (step.time_start, input_time),
-        (step.step_size, input_step),
-    ]
-    description.add_output_argument(
-        "updated_stage_derivatives",
-        is_optional=False,
-        value=updated.subs(replacements),
-    )
-    description.add_output_argument(
-        "next_state",
-        is_optional=False,
-        value=next_state.subs(replacements),
-    )
-    return wrenfold.code_generation.transpile(description)
-
-
 def transpile_radau_evaluator(step: RadauStepSystem, *, function_name: str = "radau_evaluate") -> typing.Any:
     """Create Wrenfold IR that evaluates a Radau residual and Jacobian."""
     size = len(step.stage_derivatives)
@@ -414,40 +359,6 @@ def transpile_ac_auxiliary_linearizer(system: EquationSystem, *, function_name: 
     description.add_output_argument("state_jacobian", is_optional=False, value=state_jacobian.subs(replacements))
     description.add_output_argument("derivative_jacobian", is_optional=False, value=derivative_jacobian.subs(replacements))
     return wrenfold.code_generation.transpile(description)
-
-
-def generate_python_radau_solver(
-    system: EquationSystem,
-    *,
-    function_name: str = "radau_newton_step",
-) -> str:
-    """Generate Python source for the Radau-IIA Newton update function."""
-    step = discretize_radau_iia(system)
-    function = transpile_radau_newton_step(step, function_name=function_name)
-    source = wrenfold.code_generation.PythonGenerator().generate(function)
-    return f"import numpy as np\n\n{source}"
-
-
-def generate_wasm_radau_solver(
-    system: EquationSystem,
-    *,
-    function_name: str = "radau_evaluate",
-    memory_pages: int = 1,
-) -> bytes:
-    """Generate a WebAssembly binary containing the Radau Newton update."""
-    if memory_pages < 1:
-        msg = "memory_pages must be positive"
-        raise ValueError(msg)
-    required_pages = (radau_memory_layout(system).byte_length + 65_535) // 65_536
-    step = discretize_radau_iia(system)
-    evaluator = transpile_radau_evaluator(step, function_name=function_name)
-    stationary = transpile_stationary_evaluator(system)
-    auxiliaries = transpile_auxiliary_evaluator(system) if system.auxiliaries else None
-    ac = transpile_ac_linearizer(system)
-    ac_auxiliaries = transpile_ac_auxiliary_linearizer(system) if system.auxiliaries else None
-    solver = dense_lu_solve_function()
-    functions = tuple(item for item in (evaluator, stationary, auxiliaries, ac, ac_auxiliaries, solver) if item is not None)
-    return WasmGenerator(memory_pages=max(memory_pages, required_pages)).generate(functions)
 
 
 def _ordered_nodes(circuit: Circuit) -> tuple[str, ...]:
@@ -573,49 +484,3 @@ def _unique_symbols(count: int) -> Expressions:
     if count == 1:
         return (symbols,)
     return tuple(symbols)
-
-
-def _solve_lower(matrix: wrenfold.sym.MatrixExpr, right_hand_side: wrenfold.sym.MatrixExpr) -> wrenfold.sym.MatrixExpr:
-    rows, columns = matrix.shape
-
-    if rows != columns or right_hand_side.shape[0] != rows:
-        msg = "incompatible lower-triangular system"
-        raise ValueError(msg)
-
-    result = [[None] * right_hand_side.shape[1] for _ in range(rows)]
-
-    for column in range(right_hand_side.shape[1]):
-        for row in range(rows):
-            value = right_hand_side[row, column]
-            for inner in range(row):
-                value -= matrix[row, inner] * result[inner][column]
-            result[row][column] = value / matrix[row, row]
-
-    return wrenfold.sym.matrix(result)
-
-
-def _solve_upper(matrix: wrenfold.sym.MatrixExpr, right_hand_side: wrenfold.sym.MatrixExpr) -> wrenfold.sym.MatrixExpr:
-    rows, columns = matrix.shape
-
-    if rows != columns or right_hand_side.shape[0] != rows:
-        msg = "incompatible upper-triangular system"
-        raise ValueError(msg)
-
-    result = [[None] * right_hand_side.shape[1] for _ in range(rows)]
-
-    for column in range(right_hand_side.shape[1]):
-        for row in reversed(range(rows)):
-            value = right_hand_side[row, column]
-            for inner in range(row + 1, rows):
-                value -= matrix[row, inner] * result[inner][column]
-            result[row][column] = value / matrix[row, row]
-
-    return wrenfold.sym.matrix(result)
-
-
-def _solve_lu(matrix: wrenfold.sym.MatrixExpr, right_hand_side: wrenfold.sym.MatrixExpr) -> wrenfold.sym.MatrixExpr:
-    permutation_rows, lower, upper, permutation_columns = wrenfold.sym.full_piv_lu(matrix)
-    intermediate = _solve_lower(lower, permutation_rows.T * right_hand_side)
-    solution = _solve_upper(upper, intermediate)
-
-    return permutation_columns.T * solution
