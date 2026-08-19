@@ -103,6 +103,7 @@ class CircuitCompilerTest(unittest.TestCase):
                                     "threshold_voltage": 1,
                                     "transconductance": 0.01,
                                     "channel_length_modulation": 0.01,
+                                    "transition_voltage": 0.01,
                                 },
                             )
                         }
@@ -123,6 +124,33 @@ class CircuitCompilerTest(unittest.TestCase):
             ("Phi_input", "Phi_output", "I_V1_p", "I_R1_p", "I_C1_p"),
         )
         self.assertEqual(len(system.state), len(system.equations))
+
+    def test_dynamic_builtin_models_compile(self) -> None:
+        elements = {
+            "D1": antispice.Element("1n4148", ("0", "diode")),
+            "Q1": antispice.Element("2n3904", ("0", "base", "collector")),
+            "M1": antispice.Element("2n7000", ("0", "gate", "drain")),
+            "A1": antispice.Element(
+                "opamp-slew-limited",
+                ("0", "positive-rail", "plus", "minus", "output"),
+                {
+                    "open_loop_gain": 100_000,
+                    "slew_rate": 500_000,
+                    "transition_voltage": 0.05,
+                    "upper_dropout_voltage": 1.5,
+                    "lower_dropout_voltage": 1.5,
+                    "upper_input_saturation_voltage": 1.5,
+                    "lower_input_saturation_voltage": 1.5,
+                },
+            ),
+        }
+
+        system = compiler.compile_circuit(antispice.Circuit(elements=elements))
+
+        self.assertEqual(len(system.equations), len(system.state))
+        equations = " ".join(map(str, system.equations))
+        for derivative in ("Phidot_diode", "Phidot_base", "Phidot_gate", "Phidot_output"):
+            self.assertIn(derivative, equations)
 
     def test_port_currents_generate_kcl_at_port_and_reference_nodes(self) -> None:
         model = antispice.Model(

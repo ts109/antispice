@@ -111,6 +111,26 @@ part.
 
 An element using a part may still override individual parameter values.
 
+The built-in library includes compact dynamic models alongside the simpler DC
+models:
+
+- `diode-charge-storage` adds junction capacitance and diffusion-charge transit
+  time. The built-in `1n4148` and `1n4007` bind representative fast and slow
+  switching parameters.
+- `bjt-charge-control` extends Ebers-Moll with base-emitter/base-collector
+  capacitance and forward/reverse transit time.
+- `fet-shichman-hodges-capacitive` adds gate-source, gate-drain, and
+  drain-source capacitance to the level-1 channel model. Its cutoff and
+  triode-to-saturation boundaries use differentiable square-root transitions.
+- `opamp-slew-limited` has conventional positive- and negative-supply ports
+  and models open-loop gain, input saturation headroom, output dropout, a
+  dominant small-signal regime, and smooth slew limiting. Its approximate
+  unity-gain angular bandwidth is `slew_rate / transition_voltage`; open-loop
+  gain does not multiply the closed-loop pole, and the open-loop transfer is
+  centered at the midpoint of the two supply rails. Each zero saturation
+  or dropout parameter disables its corresponding limit; nonzero values enable
+  differentiable soft clipping at that distance from the relevant supply rail.
+
 ### Elements and circuits
 
 An `Element` places a model or part into a circuit. Its node tuple follows the

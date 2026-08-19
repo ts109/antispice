@@ -171,7 +171,54 @@ class BuiltinLibraryTest(unittest.TestCase):
         self.assertIsInstance(fet, antispice.Model)
         self.assertEqual(fet.ports, ("S", "G", "D"))
         self.assertIn("polarity", fet.parameters)
-        self.assertEqual(set(fet.auxiliaries), {"v_gs", "v_ds", "overdrive", "channel_current"})
+        self.assertEqual(
+            set(fet.auxiliaries),
+            {"v_gs", "v_ds", "overdrive", "gate_activation", "positive_overdrive", "effective_v_ds", "channel_current"},
+        )
+
+    def test_dynamic_semiconductor_and_opamp_models_are_available(self) -> None:
+        diode = antispice.BUILTIN_LIBRARY["diode-charge-storage"]
+        bjt = antispice.BUILTIN_LIBRARY["bjt-charge-control"]
+        fet = antispice.BUILTIN_LIBRARY["fet-shichman-hodges-capacitive"]
+        opamp = antispice.BUILTIN_LIBRARY["opamp-slew-limited"]
+
+        self.assertIsInstance(diode, antispice.Model)
+        self.assertIn("Udot_A", diode.equations[0])
+        self.assertIn("forward_transit_time", bjt.parameters)
+        self.assertTrue(any("Udot_B" in equation for equation in bjt.equations))
+        self.assertIn("gate_source_capacitance", fet.parameters)
+        self.assertIn("Udot_G", fet.equations[0])
+        self.assertEqual(opamp.ports, ("negative_supply", "positive_supply", "noninverting", "inverting", "output"))
+        self.assertNotIn("upper_supply_voltage", opamp.parameters)
+        self.assertNotIn("lower_supply_voltage", opamp.parameters)
+        self.assertIn("Udot_output", opamp.equations[-1])
+        self.assertIn("normalized_error", opamp.auxiliaries)
+        self.assertEqual(opamp.auxiliaries["normalized_error"], "(target_voltage - U_output) / (open_loop_gain * transition_voltage)")
+        self.assertIn("upper_dropout_voltage ** 2", opamp.auxiliaries["upper_dropout_activation"])
+        self.assertIn("lower_input_saturation_voltage ** 2", opamp.auxiliaries["lower_saturation_activation"])
+
+    def test_builtin_models_have_no_discontinuous_where_expressions(self) -> None:
+        for name, definition in antispice.BUILTIN_LIBRARY.items():
+            if not isinstance(definition, antispice.Model):
+                continue
+            with self.subTest(name=name):
+                expressions = (*definition.equations, *definition.auxiliaries.values())
+                self.assertFalse(any("where(" in expression for expression in expressions))
+
+    def test_named_parts_use_dynamic_semiconductor_models(self) -> None:
+        expected = {
+            "1n4148": "diode-charge-storage",
+            "1n4007": "diode-charge-storage",
+            "2n3904": "bjt-charge-control",
+            "2n3906": "bjt-charge-control",
+            "2n7000": "fet-shichman-hodges-capacitive",
+            "bs170": "fet-shichman-hodges-capacitive",
+        }
+        for name, model in expected.items():
+            with self.subTest(name=name):
+                definition = antispice.BUILTIN_LIBRARY[name]
+                self.assertIsInstance(definition, antispice.Part)
+                self.assertEqual(definition.model, model)
 
     def test_packaged_parts_bind_complete_models(self) -> None:
         for name in ("1n4148", "1n4007", "2n3904", "2n3906", "2n7000", "bs170", "bc547", "bc548", "bc549"):

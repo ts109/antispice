@@ -5,6 +5,19 @@ ports = ["K", "A"]
 parameters = ["saturation_current", "emission_coefficient", "thermal_voltage"]
 equations = ["I_A - saturation_current * (exp(U_A / (emission_coefficient * thermal_voltage)) - 1)"]
 
+# Shockley conduction plus depletion and diffusion charge.  This is the
+# compact-model subset that matters most for switching speed: transit_time
+# separates stored-charge rectifiers from fast small-signal diodes.
+[diode-charge-storage]
+ports = ["K", "A"]
+parameters = ["saturation_current", "emission_coefficient", "thermal_voltage", "junction_capacitance", "transit_time"]
+equations = ["I_A - conduction_current - dynamic_capacitance * Udot_A"]
+
+[diode-charge-storage.auxiliaries]
+exponential = "exp(U_A / (emission_coefficient * thermal_voltage))"
+conduction_current = "saturation_current * (exponential - 1)"
+dynamic_capacitance = "junction_capacitance + transit_time * saturation_current * exponential / (emission_coefficient * thermal_voltage)"
+
 [bjt-ebers-moll]
 ports = ["E", "B", "C"]
 parameters = ["polarity", "saturation_current", "forward_beta", "reverse_beta", "thermal_voltage"]
@@ -19,9 +32,32 @@ v_bc = "polarity * (U_B - U_C)"
 i_forward = "saturation_current * (exp(v_be / thermal_voltage) - 1)"
 i_reverse = "saturation_current * (exp(v_bc / thermal_voltage) - 1)"
 
+# Charge-control extension of Ebers-Moll.  The two zero-bias junction
+# capacitances model depletion charge, while the transit times model the
+# bias-dependent diffusion charge responsible for finite switching speed.
+[bjt-charge-control]
+ports = ["E", "B", "C"]
+parameters = ["polarity", "saturation_current", "forward_beta", "reverse_beta", "thermal_voltage", "base_emitter_capacitance", "base_collector_capacitance", "forward_transit_time", "reverse_transit_time"]
+equations = [
+  "I_B - conductive_base_current - c_be * Udot_B - c_bc * (Udot_B - Udot_C)",
+  "I_C - conductive_collector_current - c_bc * (Udot_C - Udot_B)",
+]
+
+[bjt-charge-control.auxiliaries]
+v_be = "polarity * U_B"
+v_bc = "polarity * (U_B - U_C)"
+exp_be = "exp(v_be / thermal_voltage)"
+exp_bc = "exp(v_bc / thermal_voltage)"
+i_forward = "saturation_current * (exp_be - 1)"
+i_reverse = "saturation_current * (exp_bc - 1)"
+conductive_base_current = "polarity * (i_forward / (forward_beta + 1) + i_reverse / (reverse_beta + 1))"
+conductive_collector_current = "polarity * (forward_beta / (forward_beta + 1) * i_forward - i_reverse)"
+c_be = "base_emitter_capacitance + forward_transit_time * saturation_current * exp_be / thermal_voltage"
+c_bc = "base_collector_capacitance + reverse_transit_time * saturation_current * exp_bc / thermal_voltage"
+
 [fet-shichman-hodges]
 ports = ["S", "G", "D"]
-parameters = ["polarity", "threshold_voltage", "transconductance", "channel_length_modulation"]
+parameters = ["polarity", "threshold_voltage", "transconductance", "channel_length_modulation", "transition_voltage"]
 equations = [
   "I_G",
   "I_D - polarity * channel_current * (1 + channel_length_modulation * v_ds)",
@@ -31,4 +67,66 @@ equations = [
 v_gs = "polarity * U_G"
 v_ds = "polarity * U_D"
 overdrive = "v_gs - threshold_voltage"
-channel_current = "where(v_gs <= threshold_voltage, 0, where(v_ds < overdrive, transconductance * (overdrive * v_ds - v_ds ** 2 / 2), transconductance * overdrive ** 2 / 2))"
+gate_activation = "(1 + overdrive / sqrt(overdrive ** 2 + transition_voltage ** 2)) / 2"
+positive_overdrive = "(overdrive + sqrt(overdrive ** 2 + transition_voltage ** 2)) / 2"
+effective_v_ds = "(v_ds + positive_overdrive - sqrt((v_ds - positive_overdrive) ** 2 + transition_voltage ** 2)) / 2"
+channel_current = "gate_activation * transconductance * (positive_overdrive * effective_v_ds - effective_v_ds ** 2 / 2)"
+
+[fet-shichman-hodges-capacitive]
+ports = ["S", "G", "D"]
+parameters = ["polarity", "threshold_voltage", "transconductance", "channel_length_modulation", "transition_voltage", "gate_source_capacitance", "gate_drain_capacitance", "drain_source_capacitance"]
+equations = [
+  "I_G - gate_source_capacitance * Udot_G - gate_drain_capacitance * (Udot_G - Udot_D)",
+  "I_D - polarity * channel_current * (1 + channel_length_modulation * v_ds) - drain_source_capacitance * Udot_D - gate_drain_capacitance * (Udot_D - Udot_G)",
+]
+
+[fet-shichman-hodges-capacitive.auxiliaries]
+v_gs = "polarity * U_G"
+v_ds = "polarity * U_D"
+overdrive = "v_gs - threshold_voltage"
+gate_activation = "(1 + overdrive / sqrt(overdrive ** 2 + transition_voltage ** 2)) / 2"
+positive_overdrive = "(overdrive + sqrt(overdrive ** 2 + transition_voltage ** 2)) / 2"
+effective_v_ds = "(v_ds + positive_overdrive - sqrt((v_ds - positive_overdrive) ** 2 + transition_voltage ** 2)) / 2"
+channel_current = "gate_activation * transconductance * (positive_overdrive * effective_v_ds - effective_v_ds ** 2 / 2)"
+
+# Voltage-feedback op-amp with input common-mode clipping, output swing limits,
+# a dominant-pole small-signal regime, and a smooth slew-rate limit.  The ratio
+# slew_rate / transition_voltage is approximately the unity-gain bandwidth in
+# rad/s; input-referred normalization prevents open-loop gain from multiplying
+# the closed-loop pole.
+[opamp-slew-limited]
+ports = ["negative_supply", "positive_supply", "noninverting", "inverting", "output"]
+parameters = ["open_loop_gain", "slew_rate", "transition_voltage", "upper_dropout_voltage", "lower_dropout_voltage", "upper_input_saturation_voltage", "lower_input_saturation_voltage"]
+equations = [
+  "I_positive_supply",
+  "I_noninverting",
+  "I_inverting",
+  # Algebraically equivalent to Udot_output = slew_rate * limited_error,
+  # but dimensionless residual scaling keeps Newton well conditioned.
+  "Udot_output / slew_rate * (1 + normalized_error ** 8) ** (1 / 8) - normalized_error",
+]
+
+[opamp-slew-limited.auxiliaries]
+upper_saturation_activation = "upper_input_saturation_voltage ** 2 / (upper_input_saturation_voltage ** 2 + transition_voltage ** 2)"
+lower_saturation_activation = "lower_input_saturation_voltage ** 2 / (lower_input_saturation_voltage ** 2 + transition_voltage ** 2)"
+upper_input_limit = "U_positive_supply - upper_input_saturation_voltage"
+lower_input_limit = "lower_input_saturation_voltage"
+soft_upper_noninverting = "upper_input_limit - (upper_input_limit - U_noninverting + sqrt((upper_input_limit - U_noninverting) ** 2 + transition_voltage ** 2)) / 2"
+soft_upper_inverting = "upper_input_limit - (upper_input_limit - U_inverting + sqrt((upper_input_limit - U_inverting) ** 2 + transition_voltage ** 2)) / 2"
+upper_limited_noninverting = "U_noninverting + upper_saturation_activation * (soft_upper_noninverting - U_noninverting)"
+upper_limited_inverting = "U_inverting + upper_saturation_activation * (soft_upper_inverting - U_inverting)"
+soft_lower_noninverting = "lower_input_limit + (upper_limited_noninverting - lower_input_limit + sqrt((upper_limited_noninverting - lower_input_limit) ** 2 + transition_voltage ** 2)) / 2"
+soft_lower_inverting = "lower_input_limit + (upper_limited_inverting - lower_input_limit + sqrt((upper_limited_inverting - lower_input_limit) ** 2 + transition_voltage ** 2)) / 2"
+limited_noninverting = "upper_limited_noninverting + lower_saturation_activation * (soft_lower_noninverting - upper_limited_noninverting)"
+limited_inverting = "upper_limited_inverting + lower_saturation_activation * (soft_lower_inverting - upper_limited_inverting)"
+quiescent_output_voltage = "U_positive_supply / 2"
+unclipped_target = "quiescent_output_voltage + open_loop_gain * (limited_noninverting - limited_inverting)"
+upper_dropout_activation = "upper_dropout_voltage ** 2 / (upper_dropout_voltage ** 2 + transition_voltage ** 2)"
+lower_dropout_activation = "lower_dropout_voltage ** 2 / (lower_dropout_voltage ** 2 + transition_voltage ** 2)"
+upper_output_limit = "U_positive_supply - upper_dropout_voltage"
+lower_output_limit = "lower_dropout_voltage"
+soft_upper_target = "upper_output_limit - (upper_output_limit - unclipped_target + sqrt((upper_output_limit - unclipped_target) ** 2 + transition_voltage ** 2)) / 2"
+upper_limited_target = "unclipped_target + upper_dropout_activation * (soft_upper_target - unclipped_target)"
+soft_lower_target = "lower_output_limit + (upper_limited_target - lower_output_limit + sqrt((upper_limited_target - lower_output_limit) ** 2 + transition_voltage ** 2)) / 2"
+target_voltage = "upper_limited_target + lower_dropout_activation * (soft_lower_target - upper_limited_target)"
+normalized_error = "(target_voltage - U_output) / (open_loop_gain * transition_voltage)"

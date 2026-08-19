@@ -54,6 +54,42 @@ class PythonSolverTest(unittest.TestCase):
         self.assertAlmostEqual(result.potential("output")[-1], 1 - math.exp(-1), delta=1e-5)
         self.assertTrue(numpy.shares_memory(result.potential("output"), result.states))
 
+    def test_opamp_unity_buffer_tracks_a_ten_millivolt_step(self) -> None:
+        amplitude = 1e-2
+        circuit = antispice.Circuit(
+            elements={
+                "VNEG": antispice.Element("voltage-source", ("0", "negative-rail"), {"voltage": -15}),
+                "VPOS": antispice.Element("voltage-source", ("0", "positive-rail"), {"voltage": 15}),
+                "VIN": antispice.Element("voltage-source", ("0", "input"), {"voltage": f"where(t > 0, {amplitude}, 0)"}),
+                "A1": antispice.Element(
+                    "opamp-slew-limited",
+                    ("negative-rail", "positive-rail", "input", "output", "output"),
+                    {
+                        "open_loop_gain": 100_000,
+                        "slew_rate": 1e6,
+                        "transition_voltage": 0.1,
+                        "upper_dropout_voltage": 0,
+                        "lower_dropout_voltage": 0,
+                        "upper_input_saturation_voltage": 0,
+                        "lower_input_saturation_voltage": 0,
+                    },
+                ),
+            }
+        )
+        solver = antispice.compile_python(circuit)
+
+        operating_point = solver.operating_point(0)
+        result = solver.transient(
+            start_time=0,
+            end_time=2e-6,
+            minimum_step_size=1e-10,
+            maximum_step_size=1e-7,
+            relative_tolerance=1e-5,
+        )
+
+        self.assertAlmostEqual(operating_point.potential("output"), 0, delta=1e-10)
+        self.assertAlmostEqual(result.potential("output")[-1], amplitude, delta=amplitude * 1e-4)
+
     def test_transient_storage_grows_geometrically_beyond_initial_capacity(self) -> None:
         circuit = antispice.Circuit(elements={"R1": antispice.Element("resistor", ("0", "output"), {"resistance": 1_000.0})})
         solver = antispice.compile_python(circuit)
