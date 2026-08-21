@@ -58,6 +58,21 @@ type Definition = Model | Part
 type DefinitionReference = str | Definition
 
 
+@dataclasses.dataclass(frozen=True)
+class LibraryTopology:
+    """Informational include topology for a loaded library."""
+
+    source: str
+    definitions: tuple[str, ...]
+    includes: tuple[LibraryTopology, ...]
+
+    @property
+    def name(self) -> str:
+        """Return a display name derived only from the source filename."""
+        stem = PurePosixPath(self.source).name.removesuffix(".toml")
+        return stem.replace("-", " ").title()
+
+
 @dataclasses.dataclass
 class Element:
     """A named or inline definition connected to circuit nodes."""
@@ -229,7 +244,14 @@ def _shape_error(
 
 
 def _load_library(root: Any, filename: str = BUILTIN_LIBRARY_FILENAME) -> dict[str, Definition]:
-    return _load_library_file(root, PurePosixPath(filename), ())
+    return _load_library_bundle(root, filename)[0]
+
+
+def _load_library_bundle(
+    root: Any,
+    filename: str = BUILTIN_LIBRARY_FILENAME,
+) -> tuple[dict[str, Definition], LibraryTopology]:
+    return _load_library_file_with_topology(root, PurePosixPath(filename), ())
 
 
 def _load_library_file(
@@ -237,6 +259,14 @@ def _load_library_file(
     filename: PurePosixPath,
     stack: tuple[PurePosixPath, ...],
 ) -> dict[str, Definition]:
+    return _load_library_file_with_topology(root, filename, stack)[0]
+
+
+def _load_library_file_with_topology(
+    root: Any,
+    filename: PurePosixPath,
+    stack: tuple[PurePosixPath, ...],
+) -> tuple[dict[str, Definition], LibraryTopology]:
     if filename in stack:
         chain = " -> ".join(map(str, (*stack, filename)))
         msg = f"cyclic library include: {chain}"
@@ -261,17 +291,21 @@ def _load_library_file(
         raise ValueError(msg)
 
     library: dict[str, Definition] = {}
+    topology_children = []
     for include in includes:
         relative = PurePosixPath(include)
         if relative.is_absolute() or ".." in relative.parts:
             msg = f"library file {filename} has invalid include path {include!r}"
             raise ValueError(msg)
         child = filename.parent.joinpath(relative)
-        _merge_library(library, _load_library_file(root, child, (*stack, filename)), child)
+        child_library, child_topology = _load_library_file_with_topology(root, child, (*stack, filename))
+        _merge_library(library, child_library, child)
+        topology_children.append(child_topology)
 
     definitions = {name: _decode_definition(name, value) for name, value in encoded.items()}
     _merge_library(library, definitions, filename)
-    return library
+    topology = LibraryTopology(str(filename), tuple(definitions), tuple(topology_children))
+    return library, topology
 
 
 def _merge_library(target: dict[str, Definition], source: dict[str, Definition], filename: PurePosixPath) -> None:
@@ -284,10 +318,14 @@ def _merge_library(target: dict[str, Definition], source: dict[str, Definition],
 
 
 def _load_builtin_library() -> dict[str, Definition]:
+    return _load_builtin_library_bundle()[0]
+
+
+def _load_builtin_library_bundle() -> tuple[dict[str, Definition], LibraryTopology]:
     override = Path.cwd() / BUILTIN_LIBRARY_FILENAME
     if override.is_file():
-        return _load_library(Path.cwd())
-    return _load_library(resources.files(__package__))
+        return _load_library_bundle(Path.cwd())
+    return _load_library_bundle(resources.files(__package__))
 
 
-BUILTIN_LIBRARY: dict[str, Definition] = _load_builtin_library()
+BUILTIN_LIBRARY, BUILTIN_LIBRARY_TOPOLOGY = _load_builtin_library_bundle()

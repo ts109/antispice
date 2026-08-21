@@ -255,6 +255,24 @@ class BuiltinLibraryTest(unittest.TestCase):
         self.assertEqual(set(library), {"wire", "jumper"})
         self.assertEqual(library["jumper"], antispice.Part("wire", {}))
 
+    def test_library_topology_preserves_includes_and_derives_names(self) -> None:
+        """Topology remains informational alongside the flat namespace."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = circuit_module.Path(directory)
+            (root / "models").mkdir()
+            (root / "library.toml").write_text('include = ["models/basic-parts.toml"]\n', encoding="utf-8")
+            (root / "models/basic-parts.toml").write_text(
+                '[wire]\nports = ["ref", "p"]\nparameters = []\nequations = ["U_p"]\n',
+                encoding="utf-8",
+            )
+            library, topology = circuit_module._load_library_bundle(root, "library.toml")
+
+        self.assertEqual(set(library), {"wire"})
+        self.assertEqual(topology.name, "Library")
+        self.assertEqual(topology.definitions, ())
+        self.assertEqual(topology.includes[0].name, "Basic Parts")
+        self.assertEqual(topology.includes[0].definitions, ("wire",))
+
     def test_include_cycles_and_duplicate_definitions_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = circuit_module.Path(directory)

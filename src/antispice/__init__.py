@@ -2,8 +2,10 @@
 
 from .circuit import (
     BUILTIN_LIBRARY,
+    BUILTIN_LIBRARY_TOPOLOGY,
     Circuit,
     Element,
+    LibraryTopology,
     Model,
     Part,
 )
@@ -26,6 +28,7 @@ from .wasm_target import WasmArtifact, WasmLayout, compile_wasm
 
 __all__ = [
     "BUILTIN_LIBRARY",
+    "BUILTIN_LIBRARY_TOPOLOGY",
     "REFERENCE_NODE",
     "ACCurrentInput",
     "ACInput",
@@ -33,6 +36,7 @@ __all__ = [
     "ACVoltageInput",
     "Circuit",
     "Element",
+    "LibraryTopology",
     "LinearSolver",
     "LinearizedSystem",
     "Model",
