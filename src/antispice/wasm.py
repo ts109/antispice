@@ -151,12 +151,7 @@ class WasmGenerator(wrenfold.BaseGenerator):
 
 
 class _FunctionEmitter:
-    def __init__(
-        self,
-        function: ast.FunctionDefinition,
-        *,
-        import_indices: dict[str, int],
-    ) -> None:
+    def __init__(self, function: ast.FunctionDefinition, *, import_indices: dict[str, int]) -> None:
         self.function = function
         self.import_indices = import_indices
         self.local_indices: dict[str, int] = {}
@@ -506,9 +501,7 @@ def dense_lu_solve_function(*, name: str = "dense_lu_solve") -> NativeWasmFuncti
     )
 
 
-def _function_signature(
-    signature: ast.FunctionSignature,
-) -> tuple[tuple[int, ...], tuple[int, ...], WasmFunction]:
+def _function_signature(signature: ast.FunctionSignature) -> tuple[tuple[int, ...], tuple[int, ...], WasmFunction]:
     parameters = tuple(_argument_wasm_type(argument) for argument in signature.arguments)
     result = () if signature.return_type is None else (_numeric_wasm_type(signature.return_type),)
     arguments = tuple(
