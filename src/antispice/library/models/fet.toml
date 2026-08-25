@@ -1,0 +1,18 @@
+format = 1
+
+[fet-shichman-hodges]
+ports = ["S", "G", "D"]
+parameters = ["polarity", "threshold_voltage", "transconductance", "channel_length_modulation", "transition_voltage", "gate_source_capacitance", "gate_drain_capacitance", "drain_source_capacitance"]
+equations = [
+  "I_G - gate_source_capacitance * Udot_G - gate_drain_capacitance * (Udot_G - Udot_D)",
+  "I_D - polarity * channel_current * (1 + channel_length_modulation * v_ds) - drain_source_capacitance * Udot_D - gate_drain_capacitance * (Udot_D - Udot_G)",
+]
+
+[fet-shichman-hodges.auxiliaries]
+v_gs = "polarity * U_G"
+v_ds = "polarity * U_D"
+overdrive = "v_gs - threshold_voltage"
+gate_activation = "(1 + overdrive / sqrt(overdrive ** 2 + transition_voltage ** 2)) / 2"
+positive_overdrive = "(overdrive + sqrt(overdrive ** 2 + transition_voltage ** 2)) / 2"
+effective_v_ds = "(v_ds + positive_overdrive - sqrt((v_ds - positive_overdrive) ** 2 + transition_voltage ** 2)) / 2"
+channel_current = "gate_activation * transconductance * (positive_overdrive * effective_v_ds - effective_v_ds ** 2 / 2)"

@@ -23,7 +23,7 @@ def parse_expression(
 ) -> SymbolicExpression:
     """Parse one non-executing arithmetic expression."""
     try:
-        tree = ast.parse(source, mode="eval")
+        tree = ast.parse(source.replace("\n", " "), mode="eval")
         return _ExpressionCompiler(environment).visit(tree.body)
     except UnknownName:
         raise
@@ -48,7 +48,7 @@ class _ExpressionCompiler(ast.NodeVisitor):
         ast.Gt: lambda left, right: left > right,
         ast.GtE: lambda left, right: left >= right,
     }
-    _functions: typing.ClassVar = {name: getattr(wrenfold.sym, name) for name in ("sin", "cos", "tan", "exp", "log", "sqrt", "where")}
+    _functions: typing.ClassVar = {name: getattr(wrenfold.sym, name) for name in ("sin", "cos", "tan", "tanh", "exp", "log", "sqrt", "where")}
 
     def __init__(self, environment: dict[str, Expression | SymbolicExpression]) -> None:
         self.environment = {"pi": math.pi, "e": math.e, **environment}

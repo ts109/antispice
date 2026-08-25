@@ -3,7 +3,12 @@ format = 1
 include = [
   "library/models/passive.toml",
   "library/models/sources.toml",
-  "library/models/semiconductor.toml",
+  "library/models/diode.toml",
+  "library/models/bjt-transistor.toml",
+  "library/models/fet.toml",
+  "library/models/opamp.toml",
   "library/parts/diodes.toml",
-  "library/parts/transistors.toml",
+  "library/parts/npn-transistors.toml",
+  "library/parts/pnp-transistors.toml",
+  "library/parts/fets.toml",
 ]

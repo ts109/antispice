@@ -1,0 +1,14 @@
+format = 1
+
+# Shockley conduction plus depletion and diffusion charge.  This is the
+# compact-model subset that matters most for switching speed: transit_time
+# separates stored-charge rectifiers from fast small-signal diodes.
+[diode-charge-storage]
+ports = ["K", "A"]
+parameters = ["saturation_current", "emission_coefficient", "thermal_voltage", "junction_capacitance", "transit_time"]
+equations = ["I_A - conduction_current - dynamic_capacitance * Udot_A"]
+
+[diode-charge-storage.auxiliaries]
+exponential = "exp(U_A / (emission_coefficient * thermal_voltage))"
+conduction_current = "saturation_current * (exponential - 1)"
+dynamic_capacitance = "junction_capacitance + transit_time * saturation_current * exponential / (emission_coefficient * thermal_voltage)"

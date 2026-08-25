@@ -31,7 +31,7 @@ reverse_transit_time = 100e-9
 # Nominal level-1 conduction parameters with representative terminal
 # capacitances. Breakdown, package, temperature, and noise are not modeled.
 ["2n7000"]
-model = "fet-shichman-hodges-capacitive"
+model = "fet-shichman-hodges"
 
 ["2n7000".parameters]
 polarity = 1
@@ -44,7 +44,7 @@ gate_drain_capacitance = 5e-12
 drain_source_capacitance = 10e-12
 
 ["bs170"]
-model = "fet-shichman-hodges-capacitive"
+model = "fet-shichman-hodges"
 
 ["bs170".parameters]
 polarity = 1

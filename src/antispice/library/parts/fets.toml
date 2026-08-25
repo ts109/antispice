@@ -1,0 +1,27 @@
+format = 1
+
+["2n7000"]
+model = "fet-shichman-hodges"
+
+["2n7000".parameters]
+polarity = 1
+threshold_voltage = 2.1
+transconductance = 0.09
+channel_length_modulation = 0.01
+transition_voltage = 0.01
+gate_source_capacitance = 20e-12
+gate_drain_capacitance = 5e-12
+drain_source_capacitance = 10e-12
+
+["bs170"]
+model = "fet-shichman-hodges"
+
+["bs170".parameters]
+polarity = 1
+threshold_voltage = 2.0
+transconductance = 0.08
+channel_length_modulation = 0.01
+transition_voltage = 0.01
+gate_source_capacitance = 24e-12
+gate_drain_capacitance = 6e-12
+drain_source_capacitance = 12e-12

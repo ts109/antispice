@@ -1,0 +1,317 @@
+format = 1
+
+[bjt-gummel-poon]
+ports = ["E", "B", "C"]
+
+parameters = [
+    "polarity",                       # NPN: +1, PNP: -1; from model type NPN/PNP
+    "saturation_current",             # IS
+    "forward_beta",                   # BF
+    "reverse_beta",                   # BR
+    "forward_emission_coefficient",   # NF
+    "reverse_emission_coefficient",   # NR
+
+    "be_leakage_current",             # ISE
+    "be_leakage_emission_coefficient", # NE
+    "bc_leakage_current",             # ISC
+    "bc_leakage_emission_coefficient", # NC
+
+    "inverse_forward_early_voltage",  # 1 / VAF; 0 if VAF is absent
+    "inverse_reverse_early_voltage",  # 1 / VAR; 0 if VAR is absent
+
+    "inverse_forward_knee_current",   # 1 / IKF; 0 if IKF is absent
+    "inverse_reverse_knee_current",   # 1 / IKR; 0 if IKR is absent
+
+    "be_zero_bias_capacitance",       # CJE
+    "be_junction_potential",          # VJE
+    "be_grading_coefficient",         # MJE
+
+    "bc_zero_bias_capacitance",       # CJC
+    "bc_junction_potential",          # VJC
+    "bc_grading_coefficient",         # MJC
+
+    "depletion_coefficient",          # FC; usually 0.5
+    "depletion_smoothing",            # no SPICE equivalent; suggested ~0.01...0.03
+
+    "forward_transit_time",           # TF
+    "reverse_transit_time",           # TR
+
+    "thermal_voltage",                # k*T/q; not a .MODEL parameter (derived from temperature)
+]
+
+equations = [
+    "I_B - conductive_base_current - c_be * Udot_B - c_bc * (Udot_B - Udot_C)",
+    "I_C - conductive_collector_current - c_bc * (Udot_C - Udot_B)",
+]
+
+
+[bjt-gummel-poon.auxiliaries]
+
+# ------------------------------------------------------------------
+# Junction voltages
+# ------------------------------------------------------------------
+
+v_be = "polarity * U_B"
+v_bc = "polarity * (U_B - U_C)"
+
+
+# ------------------------------------------------------------------
+# Forward and reverse transport currents
+# ------------------------------------------------------------------
+
+exp_be = "exp(v_be / (forward_emission_coefficient * thermal_voltage))"
+
+exp_bc = "exp(v_bc / (reverse_emission_coefficient * thermal_voltage))"
+
+i_forward = "saturation_current * (exp_be - 1)"
+
+i_reverse = "saturation_current * (exp_bc - 1)"
+
+g_forward = "saturation_current * exp_be / (forward_emission_coefficient * thermal_voltage)"
+
+g_reverse = "saturation_current * exp_bc / (reverse_emission_coefficient * thermal_voltage)"
+
+
+# ------------------------------------------------------------------
+# Gummel-Poon base-charge modulation
+#
+# inverse_* parameters are zero when the corresponding SPICE
+# parameter VAF, VAR, IKF or IKR is absent.
+# ------------------------------------------------------------------
+
+base_width_denominator = "1 - v_bc * inverse_forward_early_voltage - v_be * inverse_reverse_early_voltage"
+
+base_width_factor = "1 / base_width_denominator"
+
+high_injection = "i_forward * inverse_forward_knee_current + i_reverse * inverse_reverse_knee_current"
+
+base_charge = """
+0.5 * base_width_factor
+* (
+    1
+    + sqrt(1 + 4 * high_injection)
+)
+"""
+
+transport_current = "(i_forward - i_reverse) / base_charge"
+
+
+# ------------------------------------------------------------------
+# Nonideal B-E and B-C currents
+# ------------------------------------------------------------------
+
+be_leakage = """
+be_leakage_current
+* (
+    exp(
+        v_be
+        / (
+            be_leakage_emission_coefficient
+            * thermal_voltage
+        )
+    )
+    - 1
+)
+"""
+
+bc_leakage = """
+bc_leakage_current
+* (
+    exp(
+        v_bc
+        / (
+            bc_leakage_emission_coefficient
+            * thermal_voltage
+        )
+    )
+    - 1
+)
+"""
+
+
+# ------------------------------------------------------------------
+# Conductive terminal currents
+# ------------------------------------------------------------------
+
+conductive_base_current = """
+polarity
+* (
+    i_forward / forward_beta
+    + i_reverse / reverse_beta
+    + be_leakage
+    + bc_leakage
+)
+"""
+
+conductive_collector_current = """
+polarity
+* (
+    transport_current
+    - i_reverse / reverse_beta
+    - bc_leakage
+)
+"""
+
+
+# ------------------------------------------------------------------
+# Smooth B-E depletion capacitance
+#
+# The ordinary reverse-biased junction expression is blended into
+# the SPICE-style forward continuation around
+#
+#     v = depletion_coefficient * Vj
+#
+# The regularized denominator makes the low-voltage expression
+# globally defined even though its weight becomes negligible in
+# strong forward bias.
+# ------------------------------------------------------------------
+
+be_depletion_denominator = "1 - v_be / be_junction_potential"
+
+be_depletion_denominator_regularized = """
+0.5
+* (
+    be_depletion_denominator
+    + sqrt(
+        be_depletion_denominator
+            * be_depletion_denominator
+        + depletion_smoothing
+            * depletion_smoothing
+    )
+)
++ depletion_smoothing
+"""
+
+be_capacitance_reverse = """
+be_zero_bias_capacitance
+/ (
+    be_depletion_denominator_regularized
+    ** be_grading_coefficient
+)
+"""
+
+be_capacitance_forward = """
+be_zero_bias_capacitance
+/ (
+    (1 - depletion_coefficient)
+    ** (1 + be_grading_coefficient)
+)
+* (
+    1
+    - depletion_coefficient
+        * (1 + be_grading_coefficient)
+    + be_grading_coefficient
+        * v_be
+        / be_junction_potential
+)
+"""
+
+be_capacitance_blend = """
+0.5
+* (
+    1
+    + tanh(
+        (
+            v_be
+            - depletion_coefficient
+                * be_junction_potential
+        )
+        / (
+            depletion_smoothing
+            * be_junction_potential
+        )
+    )
+)
+"""
+
+be_depletion_capacitance = """
+(1 - be_capacitance_blend)
+    * be_capacitance_reverse
++ be_capacitance_blend
+    * be_capacitance_forward
+"""
+
+
+# ------------------------------------------------------------------
+# Smooth B-C depletion capacitance
+# ------------------------------------------------------------------
+
+bc_depletion_denominator = "1 - v_bc / bc_junction_potential"
+
+bc_depletion_denominator_regularized = """
+0.5
+* (
+    bc_depletion_denominator
+    + sqrt(
+        bc_depletion_denominator
+            * bc_depletion_denominator
+        + depletion_smoothing
+            * depletion_smoothing
+    )
+)
++ depletion_smoothing
+"""
+
+bc_capacitance_reverse = """
+bc_zero_bias_capacitance
+/ (
+    bc_depletion_denominator_regularized
+    ** bc_grading_coefficient
+)
+"""
+
+bc_capacitance_forward = """
+bc_zero_bias_capacitance
+/ (
+    (1 - depletion_coefficient)
+    ** (1 + bc_grading_coefficient)
+)
+* (
+    1
+    - depletion_coefficient
+        * (1 + bc_grading_coefficient)
+    + bc_grading_coefficient
+        * v_bc
+        / bc_junction_potential
+)
+"""
+
+bc_capacitance_blend = """
+0.5 * (
+    1 + tanh(
+        (
+            v_bc
+            - depletion_coefficient
+                * bc_junction_potential
+        )
+        / (
+            depletion_smoothing
+            * bc_junction_potential
+        )
+    )
+)
+"""
+
+bc_depletion_capacitance = "(1 - bc_capacitance_blend) * bc_capacitance_reverse + bc_capacitance_blend * bc_capacitance_forward"
+
+
+# ------------------------------------------------------------------
+# Diffusion / transit-time capacitances
+#
+# Deliberate simplification:
+# base-charge modulation affects the DC transport current, but its
+# voltage derivatives are not included in the stored-charge model.
+# This avoids additional cross-capacitance terms and gives a much
+# simpler, robust DAE.
+# ------------------------------------------------------------------
+
+be_diffusion_capacitance = "forward_transit_time * g_forward / base_charge"
+bc_diffusion_capacitance = "reverse_transit_time * g_reverse"
+
+
+# ------------------------------------------------------------------
+# Total dynamic coefficients
+# ------------------------------------------------------------------
+
+c_be = "be_depletion_capacitance + be_diffusion_capacitance"
+c_bc = "bc_depletion_capacitance + bc_diffusion_capacitance"

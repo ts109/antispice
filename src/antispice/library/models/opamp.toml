@@ -1,0 +1,43 @@
+format = 1
+
+# Voltage-feedback op-amp with input common-mode clipping, output swing limits,
+# a dominant-pole small-signal regime, and a smooth slew-rate limit.  The ratio
+# slew_rate / transition_voltage is approximately the unity-gain bandwidth in
+# rad/s; input-referred normalization prevents open-loop gain from multiplying
+# the closed-loop pole.
+[opamp]
+ports = ["negative_supply", "positive_supply", "noninverting", "inverting", "output"]
+parameters = ["open_loop_gain", "slew_rate", "transition_voltage", "upper_dropout_voltage", "lower_dropout_voltage", "upper_input_saturation_voltage", "lower_input_saturation_voltage"]
+equations = [
+  "I_positive_supply",
+  "I_noninverting",
+  "I_inverting",
+  # Algebraically equivalent to Udot_output = slew_rate * limited_error,
+  # but dimensionless residual scaling keeps Newton well conditioned.
+  "Udot_output / slew_rate * (1 + normalized_error ** 8) ** (1 / 8) - normalized_error",
+]
+
+[opamp.auxiliaries]
+upper_saturation_activation = "upper_input_saturation_voltage ** 2 / (upper_input_saturation_voltage ** 2 + transition_voltage ** 2)"
+lower_saturation_activation = "lower_input_saturation_voltage ** 2 / (lower_input_saturation_voltage ** 2 + transition_voltage ** 2)"
+upper_input_limit = "U_positive_supply - upper_input_saturation_voltage"
+lower_input_limit = "lower_input_saturation_voltage"
+soft_upper_noninverting = "upper_input_limit - (upper_input_limit - U_noninverting + sqrt((upper_input_limit - U_noninverting) ** 2 + transition_voltage ** 2)) / 2"
+soft_upper_inverting = "upper_input_limit - (upper_input_limit - U_inverting + sqrt((upper_input_limit - U_inverting) ** 2 + transition_voltage ** 2)) / 2"
+upper_limited_noninverting = "U_noninverting + upper_saturation_activation * (soft_upper_noninverting - U_noninverting)"
+upper_limited_inverting = "U_inverting + upper_saturation_activation * (soft_upper_inverting - U_inverting)"
+soft_lower_noninverting = "lower_input_limit + (upper_limited_noninverting - lower_input_limit + sqrt((upper_limited_noninverting - lower_input_limit) ** 2 + transition_voltage ** 2)) / 2"
+soft_lower_inverting = "lower_input_limit + (upper_limited_inverting - lower_input_limit + sqrt((upper_limited_inverting - lower_input_limit) ** 2 + transition_voltage ** 2)) / 2"
+limited_noninverting = "upper_limited_noninverting + lower_saturation_activation * (soft_lower_noninverting - upper_limited_noninverting)"
+limited_inverting = "upper_limited_inverting + lower_saturation_activation * (soft_lower_inverting - upper_limited_inverting)"
+quiescent_output_voltage = "U_positive_supply / 2"
+unclipped_target = "quiescent_output_voltage + open_loop_gain * (limited_noninverting - limited_inverting)"
+upper_dropout_activation = "upper_dropout_voltage ** 2 / (upper_dropout_voltage ** 2 + transition_voltage ** 2)"
+lower_dropout_activation = "lower_dropout_voltage ** 2 / (lower_dropout_voltage ** 2 + transition_voltage ** 2)"
+upper_output_limit = "U_positive_supply - upper_dropout_voltage"
+lower_output_limit = "lower_dropout_voltage"
+soft_upper_target = "upper_output_limit - (upper_output_limit - unclipped_target + sqrt((upper_output_limit - unclipped_target) ** 2 + transition_voltage ** 2)) / 2"
+upper_limited_target = "unclipped_target + upper_dropout_activation * (soft_upper_target - unclipped_target)"
+soft_lower_target = "lower_output_limit + (upper_limited_target - lower_output_limit + sqrt((upper_limited_target - lower_output_limit) ** 2 + transition_voltage ** 2)) / 2"
+target_voltage = "upper_limited_target + lower_dropout_activation * (soft_lower_target - upper_limited_target)"
+normalized_error = "(target_voltage - U_output) / (open_loop_gain * transition_voltage)"
