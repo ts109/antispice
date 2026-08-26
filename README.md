@@ -114,6 +114,11 @@ An element using a part may still override individual parameter values.
 The built-in library includes compact dynamic models alongside the simpler DC
 models:
 
+- `transformer` couples two galvanically isolated windings through
+  `coupling_factor * sqrt(primary_inductance * secondary_inductance)`. A
+  negative coupling factor reverses the winding polarity.
+- `tapped-inductor` models two magnetically coupled series sections with a
+  shared electrical tap. Its positive coupling direction is series-aiding.
 - `diode-charge-storage` adds junction capacitance and diffusion-charge transit
   time. The built-in `1n4148` and `1n4007` bind representative fast and slow
   switching parameters.

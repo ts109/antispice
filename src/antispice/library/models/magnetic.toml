@@ -1,0 +1,29 @@
+format = 1
+
+# Two magnetically coupled windings with no galvanic connection.  The signed
+# coupling factor determines winding orientation and gives
+# mutual_inductance = coupling_factor * sqrt(primary_inductance * secondary_inductance).
+[transformer]
+ports = ["primary_negative", "primary_positive", "secondary_negative", "secondary_positive"]
+parameters = ["primary_inductance", "secondary_inductance", "coupling_factor"]
+equations = [
+  "U_primary_positive - primary_inductance * Idot_primary_positive - mutual_inductance * Idot_secondary_positive",
+  "I_secondary_negative + I_secondary_positive",
+  "U_secondary_positive - U_secondary_negative - mutual_inductance * Idot_primary_positive - secondary_inductance * Idot_secondary_positive",
+]
+
+[transformer.auxiliaries]
+mutual_inductance = "coupling_factor * sqrt(primary_inductance * secondary_inductance)"
+
+# Two coupled winding sections in series.  The tap is electrically shared, so
+# unlike transformer this model has no galvanic isolation.
+[tapped-inductor]
+ports = ["start", "tap", "end"]
+parameters = ["first_inductance", "second_inductance", "coupling_factor"]
+equations = [
+  "U_tap - first_inductance * (Idot_tap + Idot_end) - mutual_inductance * Idot_end",
+  "U_end - U_tap - second_inductance * Idot_end - mutual_inductance * (Idot_tap + Idot_end)",
+]
+
+[tapped-inductor.auxiliaries]
+mutual_inductance = "coupling_factor * sqrt(first_inductance * second_inductance)"

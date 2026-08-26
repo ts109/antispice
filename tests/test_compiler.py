@@ -152,6 +152,29 @@ class CircuitCompilerTest(unittest.TestCase):
         for derivative in ("Phidot_diode", "Phidot_base", "Phidot_gate", "Phidot_output"):
             self.assertIn(derivative, equations)
 
+    def test_coupled_magnetic_models_compile(self) -> None:
+        circuit = antispice.Circuit(
+            elements={
+                "T1": antispice.Element(
+                    "transformer",
+                    ("0", "primary", "secondary-common", "secondary"),
+                    {"primary_inductance": 10e-3, "secondary_inductance": 2.5e-3, "coupling_factor": 0.99},
+                ),
+                "L1": antispice.Element(
+                    "tapped-inductor",
+                    ("0", "tap", "end"),
+                    {"first_inductance": 4e-3, "second_inductance": 1e-3, "coupling_factor": 0.98},
+                ),
+            }
+        )
+
+        system = compiler.compile_circuit(circuit)
+
+        self.assertEqual(len(system.equations), len(system.state))
+        equations = " ".join(map(str, system.equations))
+        for derivative in ("Idot_T1_primary_positive", "Idot_T1_secondary_positive", "Idot_L1_tap", "Idot_L1_end"):
+            self.assertIn(derivative, equations)
+
     def test_port_currents_generate_kcl_at_port_and_reference_nodes(self) -> None:
         model = antispice.Model(
             ports=("reference", "a", "b"),

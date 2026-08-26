@@ -2,6 +2,7 @@ format = 1
 
 include = [
   "library/models/passive.toml",
+  "library/models/magnetic.toml",
   "library/models/sources.toml",
   "library/models/diode.toml",
   "library/models/bjt-transistor.toml",

@@ -197,6 +197,19 @@ class BuiltinLibraryTest(unittest.TestCase):
         self.assertIn("upper_dropout_voltage ** 2", opamp.auxiliaries["upper_dropout_activation"])
         self.assertIn("lower_input_saturation_voltage ** 2", opamp.auxiliaries["lower_saturation_activation"])
 
+    def test_coupled_magnetic_models_are_available(self) -> None:
+        transformer = antispice.BUILTIN_LIBRARY["transformer"]
+        tapped = antispice.BUILTIN_LIBRARY["tapped-inductor"]
+
+        self.assertIsInstance(transformer, antispice.Model)
+        self.assertEqual(transformer.ports, ("primary_negative", "primary_positive", "secondary_negative", "secondary_positive"))
+        self.assertEqual(transformer.equations[1], "I_secondary_negative + I_secondary_positive")
+        self.assertIn("sqrt(primary_inductance * secondary_inductance)", transformer.auxiliaries["mutual_inductance"])
+        self.assertIsInstance(tapped, antispice.Model)
+        self.assertEqual(tapped.ports, ("start", "tap", "end"))
+        self.assertIn("Idot_tap + Idot_end", tapped.equations[0])
+        self.assertIn("sqrt(first_inductance * second_inductance)", tapped.auxiliaries["mutual_inductance"])
+
     def test_builtin_models_have_no_discontinuous_where_expressions(self) -> None:
         for name, definition in antispice.BUILTIN_LIBRARY.items():
             if not isinstance(definition, antispice.Model):
