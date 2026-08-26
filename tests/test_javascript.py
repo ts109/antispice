@@ -77,6 +77,13 @@ class JavaScriptWrapperTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "function name"):
             javascript.generate_javascript_radau_wrapper(system, function_name="not-valid")
 
+    def test_adaptive_error_uses_only_differential_states(self) -> None:
+        wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())
+
+        self.assertIn("const DIFFERENTIAL_STATE_INDICES = Object.freeze([1]);", wrapper)
+        self.assertEqual(wrapper.count("for (const index of DIFFERENTIAL_STATE_INDICES)"), 1)
+        self.assertIn("differentialStateIndices: DIFFERENTIAL_STATE_INDICES", wrapper)
+
     def test_operating_point_uses_residual_backtracking(self) -> None:
         """Generated initialization rejects steps until the residual decreases."""
         wrapper = javascript.generate_javascript_radau_wrapper(_rc_system())

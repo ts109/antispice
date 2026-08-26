@@ -54,6 +54,40 @@ class PythonSolverTest(unittest.TestCase):
         self.assertAlmostEqual(result.potential("output")[-1], 1 - math.exp(-1), delta=1e-5)
         self.assertTrue(numpy.shares_memory(result.potential("output"), result.states))
 
+    def test_adaptive_transient_ignores_algebraic_current_discontinuities(self) -> None:
+        """A stepped source must not make algebraic branch currents control the timestep."""
+        circuit = antispice.Circuit(
+            elements={
+                "L1": antispice.Element(
+                    "tapped-inductor",
+                    ("0", "tap", "tank"),
+                    {"first_inductance": 1e-6, "second_inductance": 1e-6, "coupling_factor": 1},
+                ),
+                "C1": antispice.Element("capacitor", ("0", "tank"), {"capacitance": 1e-6}),
+                "Q1": antispice.Element("2n7000", ("source", "gate", "supply")),
+                "C2": antispice.Element("capacitor", ("tank", "gate"), {"capacitance": 1e-9}),
+                "R1": antispice.Element("resistor", ("0", "gate"), {"resistance": 100e3}),
+                "R2": antispice.Element("resistor", ("gate", "supply"), {"resistance": 100e3}),
+                "R3": antispice.Element("resistor", ("tap", "source"), {"resistance": 1e3}),
+                "V1": antispice.Element("voltage-source", ("0", "supply"), {"voltage": "where(t > 0, 10, 0)"}),
+            }
+        )
+        solver = antispice.compile_python(circuit)
+
+        result = solver.transient(
+            start_time=0,
+            end_time=10e-6,
+            minimum_step_size=1e-10,
+            maximum_step_size=1e-5,
+            relative_tolerance=1e-4,
+            voltage_absolute_tolerance=1e-7,
+            current_absolute_tolerance=1e-10,
+        )
+
+        self.assertEqual(result.times[-1], 10e-6)
+        self.assertAlmostEqual(result.potential("supply")[-1], 10)
+        self.assertLess(len(solver.layout.differential_states), solver.layout.state_size)
+
     def test_opamp_unity_buffer_tracks_a_ten_millivolt_step(self) -> None:
         amplitude = 1e-2
         circuit = antispice.Circuit(

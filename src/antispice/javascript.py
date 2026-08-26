@@ -5,7 +5,7 @@ import re
 from importlib.resources import files
 from typing import Any
 
-from .compiler import EquationSystem, radau_memory_layout
+from .compiler import EquationSystem, differential_state_indices, radau_memory_layout
 
 
 def generate_javascript_radau_wrapper(
@@ -33,6 +33,7 @@ def generate_javascript_radau_wrapper(
         "__CLASS_NAME__": class_name,
         "__FUNCTION_NAME__": json.dumps(function_name),
         "__STATE_SIZE__": str(len(system.state)),
+        "__DIFFERENTIAL_STATE_INDICES__": json.dumps(differential_state_indices(system)),
         "__POTENTIALS__": json.dumps(system.layout.potentials, ensure_ascii=False),
         "__CURRENTS__": json.dumps(currents, ensure_ascii=False),
         "__AUXILIARIES__": json.dumps(

@@ -97,6 +97,19 @@ class RadauMemoryLayout:
     byte_length: int
 
 
+def differential_state_indices(system: EquationSystem) -> tuple[int, ...]:
+    """Return state columns whose derivatives occur in the DAE.
+
+    Algebraic variables remain part of the solved state vector, but must not be
+    included in adaptive integration error estimates: their endpoint values
+    can jump or be non-unique without representing truncation error.
+    """
+    derivative_jacobian = wrenfold.sym.jacobian(system.equations, system.state_derivative)
+    return tuple(
+        column for column in range(len(system.state)) if any(not derivative_jacobian[row, column].is_identical_to(wrenfold.sym.zero) for row in range(len(system.equations)))
+    )
+
+
 def radau_memory_layout(system: EquationSystem) -> RadauMemoryLayout:
     """Return a compact, eight-byte-aligned WebAssembly memory layout."""
     state_size = len(system.state)

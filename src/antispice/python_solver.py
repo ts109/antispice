@@ -6,7 +6,7 @@ import math
 from typing import Any, Literal, Protocol
 
 from .circuit import Circuit
-from .compiler import REFERENCE_NODE, EquationSystem, StateLayout, compile_circuit
+from .compiler import REFERENCE_NODE, EquationSystem, StateLayout, compile_circuit, differential_state_indices
 from .python_codegen import PythonKernels, generate_python_kernels
 
 
@@ -46,6 +46,7 @@ class SimulationLayout:
     auxiliaries: dict[tuple[str, str], int]
     port_nets: dict[tuple[str, str], str]
     element_ports: dict[str, tuple[str, ...]]
+    differential_states: tuple[int, ...]
 
     @property
     def state_size(self) -> int:
@@ -603,10 +604,10 @@ class PythonSolver:
             workspace.state[:] = initial_state
             workspace.stage_derivatives[:] = initial_stage
             return False, math.inf, step_size * 0.25, error
-        absolute = np.full(self.layout.state_size, current_absolute_tolerance)
-        absolute[: len(self.layout.state.potentials)] = voltage_absolute_tolerance
-        scale = absolute + relative_tolerance * np.maximum(np.abs(initial_state), np.abs(workspace.state))
-        error_norm = float(np.max(np.abs(workspace.state - full_state) / (7 * scale), initial=0))
+        differential = np.asarray(self.layout.differential_states, dtype=np.intp)
+        absolute = np.where(differential < len(self.layout.state.potentials), voltage_absolute_tolerance, current_absolute_tolerance)
+        scale = absolute + relative_tolerance * np.maximum(np.abs(initial_state[differential]), np.abs(workspace.state[differential]))
+        error_norm = float(np.max(np.abs(workspace.state[differential] - full_state[differential]) / (7 * scale), initial=0))
         factor = 5.0 if error_norm == 0 else max(0.2, min(5.0, 0.9 * error_norm**-0.25))
         if error_norm > 1:
             workspace.state[:] = initial_state
@@ -649,5 +650,5 @@ def compile_python(
         ports = circuit.resolve_model(element).ports
         element_ports[reference] = ports
         port_nets.update(((reference, port), net) for port, net in zip(ports, element.nodes, strict=True))
-    layout = SimulationLayout(system.layout, auxiliaries, port_nets, element_ports)
+    layout = SimulationLayout(system.layout, auxiliaries, port_nets, element_ports, differential_state_indices(system))
     return PythonSolver(system, layout, generate_python_kernels(system, numpy), numpy, strategy)
