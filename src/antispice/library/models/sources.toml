@@ -8,4 +8,7 @@ equations = ["U_p - voltage"]
 [current-source]
 ports = ["ref", "p"]
 parameters = ["current"]
-equations = ["I_p - current"]
+# Port current is positive into the element, so sourcing "current" out of p means
+# I_p = -current. This makes a positive value drive current from ref through the
+# source and out of p into the circuit, the direction schematic symbols arrow toward.
+equations = ["I_p + current"]
