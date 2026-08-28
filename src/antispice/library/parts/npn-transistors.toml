@@ -599,126 +599,6 @@ forward_transit_time = 5.3e-10
 reverse_transit_time = 2.76e-07
 thermal_voltage = 0.02585
 
-["bc546"]
-model = "bjt-gummel-poon"
-
-["bc546".parameters]
-polarity = 1
-saturation_current = 5.07e-14
-forward_beta = 318
-reverse_beta = 4
-forward_emission_coefficient = 1
-reverse_emission_coefficient = 1
-be_leakage_current = 1.59e-11
-be_leakage_emission_coefficient = 2
-bc_leakage_current = 0
-bc_leakage_emission_coefficient = 2
-inverse_forward_early_voltage = 0.00689655
-inverse_reverse_early_voltage = 0.0416667
-inverse_forward_knee_current = 3.33333
-inverse_reverse_knee_current = 2.22222
-be_zero_bias_capacitance = 2.08e-11
-be_junction_potential = 0.75
-be_grading_coefficient = 0.33
-bc_zero_bias_capacitance = 8.33e-12
-bc_junction_potential = 0.75
-bc_grading_coefficient = 0.33
-depletion_coefficient = 0.5
-depletion_smoothing = 0.02
-forward_transit_time = 6.11e-10
-reverse_transit_time = 1.38e-07
-thermal_voltage = 0.02585
-
-["bc547"]
-model = "bjt-gummel-poon"
-
-["bc547".parameters]
-polarity = 1
-saturation_current = 5.07e-14
-forward_beta = 325
-reverse_beta = 4
-forward_emission_coefficient = 1
-reverse_emission_coefficient = 1
-be_leakage_current = 1.56e-11
-be_leakage_emission_coefficient = 2
-bc_leakage_current = 0
-bc_leakage_emission_coefficient = 2
-inverse_forward_early_voltage = 0.00645161
-inverse_reverse_early_voltage = 0.0416667
-inverse_forward_knee_current = 3.33333
-inverse_reverse_knee_current = 2.22222
-be_zero_bias_capacitance = 2.08e-11
-be_junction_potential = 0.75
-be_grading_coefficient = 0.33
-bc_zero_bias_capacitance = 8.33e-12
-bc_junction_potential = 0.75
-bc_grading_coefficient = 0.33
-depletion_coefficient = 0.5
-depletion_smoothing = 0.02
-forward_transit_time = 6.11e-10
-reverse_transit_time = 1.38e-07
-thermal_voltage = 0.02585
-
-["bc548"]
-model = "bjt-gummel-poon"
-
-["bc548".parameters]
-polarity = 1
-saturation_current = 5.07e-14
-forward_beta = 162
-reverse_beta = 4
-forward_emission_coefficient = 1
-reverse_emission_coefficient = 1
-be_leakage_current = 3.12e-11
-be_leakage_emission_coefficient = 2
-bc_leakage_current = 0
-bc_leakage_emission_coefficient = 2
-inverse_forward_early_voltage = 0.0124378
-inverse_reverse_early_voltage = 0.05
-inverse_forward_knee_current = 3.33333
-inverse_reverse_knee_current = 2.22222
-be_zero_bias_capacitance = 2.08e-11
-be_junction_potential = 0.75
-be_grading_coefficient = 0.33
-bc_zero_bias_capacitance = 8.33e-12
-bc_junction_potential = 0.75
-bc_grading_coefficient = 0.33
-depletion_coefficient = 0.5
-depletion_smoothing = 0.02
-forward_transit_time = 6.11e-10
-reverse_transit_time = 1.38e-07
-thermal_voltage = 0.02585
-
-["bc550"]
-model = "bjt-gummel-poon"
-
-["bc550".parameters]
-polarity = 1
-saturation_current = 5.07e-14
-forward_beta = 312
-reverse_beta = 4
-forward_emission_coefficient = 1
-reverse_emission_coefficient = 1
-be_leakage_current = 1.62e-11
-be_leakage_emission_coefficient = 2
-bc_leakage_current = 0
-bc_leakage_emission_coefficient = 2
-inverse_forward_early_voltage = 0.00787402
-inverse_reverse_early_voltage = 0.05
-inverse_forward_knee_current = 3.33333
-inverse_reverse_knee_current = 2.22222
-be_zero_bias_capacitance = 2.08e-11
-be_junction_potential = 0.75
-be_grading_coefficient = 0.33
-bc_zero_bias_capacitance = 8.33e-12
-bc_junction_potential = 0.75
-bc_grading_coefficient = 0.33
-depletion_coefficient = 0.5
-depletion_smoothing = 0.02
-forward_transit_time = 6.11e-10
-reverse_transit_time = 1.38e-07
-thermal_voltage = 0.02585
-
 ["2n3019"]
 model = "bjt-gummel-poon"
 
@@ -3089,10 +2969,10 @@ forward_transit_time = 6.4e-10
 reverse_transit_time = 5.072e-08
 thermal_voltage = 0.02585
 
-["bc546bp"]
+["bc546"]
 model = "bjt-gummel-poon"
 
-["bc546bp".parameters]
+["bc546".parameters]
 polarity = 1
 saturation_current = 1.8e-14
 forward_beta = 400
@@ -3119,10 +2999,10 @@ forward_transit_time = 6.4e-10
 reverse_transit_time = 5.072e-08
 thermal_voltage = 0.02585
 
-["bc547bp"]
+["bc547"]
 model = "bjt-gummel-poon"
 
-["bc547bp".parameters]
+["bc547".parameters]
 polarity = 1
 saturation_current = 1.8e-14
 forward_beta = 400
@@ -3149,10 +3029,10 @@ forward_transit_time = 6.4e-10
 reverse_transit_time = 5.072e-08
 thermal_voltage = 0.02585
 
-["bc548bp"]
+["bc548"]
 model = "bjt-gummel-poon"
 
-["bc548bp".parameters]
+["bc548".parameters]
 polarity = 1
 saturation_current = 1.8e-14
 forward_beta = 400
@@ -3179,10 +3059,10 @@ forward_transit_time = 6.4e-10
 reverse_transit_time = 5.072e-08
 thermal_voltage = 0.02585
 
-["bc549bp"]
+["bc549"]
 model = "bjt-gummel-poon"
 
-["bc549bp".parameters]
+["bc549".parameters]
 polarity = 1
 saturation_current = 1.8e-14
 forward_beta = 400
@@ -3209,10 +3089,10 @@ forward_transit_time = 6.4e-10
 reverse_transit_time = 5.072e-08
 thermal_voltage = 0.02585
 
-["bc550bp"]
+["bc550"]
 model = "bjt-gummel-poon"
 
-["bc550bp".parameters]
+["bc550".parameters]
 polarity = 1
 saturation_current = 1.8e-14
 forward_beta = 400

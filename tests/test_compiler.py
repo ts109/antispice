@@ -70,21 +70,20 @@ class CircuitCompilerTest(unittest.TestCase):
                     compiler.compile_circuit(circuit)
 
     def test_builtin_transistor_equations_compile_for_both_polarities(self) -> None:
+        bjt_part = antispice.BUILTIN_LIBRARY["2n3904"]
+        fet_part = antispice.BUILTIN_LIBRARY["2n7000"]
+        self.assertIsInstance(bjt_part, antispice.Part)
+        self.assertIsInstance(fet_part, antispice.Part)
+
         for polarity in (-1, 1):
             with self.subTest(device="bjt", polarity=polarity):
                 system = compiler.compile_circuit(
                     antispice.Circuit(
                         elements={
                             "Q1": antispice.Element(
-                                "bjt-ebers-moll",
+                                "bjt-gummel-poon",
                                 ("0", "base", "collector"),
-                                {
-                                    "polarity": polarity,
-                                    "saturation_current": 1e-15,
-                                    "forward_beta": 100,
-                                    "reverse_beta": 1,
-                                    "thermal_voltage": 0.02585,
-                                },
+                                bjt_part.parameters | {"polarity": polarity},
                             )
                         }
                     )
@@ -98,13 +97,7 @@ class CircuitCompilerTest(unittest.TestCase):
                             "M1": antispice.Element(
                                 "fet-shichman-hodges",
                                 ("0", "gate", "drain"),
-                                {
-                                    "polarity": polarity,
-                                    "threshold_voltage": 1,
-                                    "transconductance": 0.01,
-                                    "channel_length_modulation": 0.01,
-                                    "transition_voltage": 0.01,
-                                },
+                                fet_part.parameters | {"polarity": polarity},
                             )
                         }
                     )
@@ -131,7 +124,7 @@ class CircuitCompilerTest(unittest.TestCase):
             "Q1": antispice.Element("2n3904", ("0", "base", "collector")),
             "M1": antispice.Element("2n7000", ("0", "gate", "drain")),
             "A1": antispice.Element(
-                "opamp-slew-limited",
+                "opamp",
                 ("0", "positive-rail", "plus", "minus", "output"),
                 {
                     "open_loop_gain": 100_000,

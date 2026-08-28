@@ -96,7 +96,7 @@ class PythonSolverTest(unittest.TestCase):
                 "VPOS": antispice.Element("voltage-source", ("0", "positive-rail"), {"voltage": 15}),
                 "VIN": antispice.Element("voltage-source", ("0", "input"), {"voltage": f"where(t > 0, {amplitude}, 0)"}),
                 "A1": antispice.Element(
-                    "opamp-slew-limited",
+                    "opamp",
                     ("negative-rail", "positive-rail", "input", "output", "output"),
                     {
                         "open_loop_gain": 100_000,

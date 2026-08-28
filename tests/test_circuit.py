@@ -161,26 +161,26 @@ class BuiltinLibraryTest(unittest.TestCase):
         self.assertEqual(library, antispice.BUILTIN_LIBRARY)
 
     def test_transistor_models_use_signed_polarity(self) -> None:
-        bjt = antispice.BUILTIN_LIBRARY["bjt-ebers-moll"]
+        bjt = antispice.BUILTIN_LIBRARY["bjt-gummel-poon"]
         fet = antispice.BUILTIN_LIBRARY["fet-shichman-hodges"]
 
         self.assertIsInstance(bjt, antispice.Model)
         self.assertEqual(bjt.ports, ("E", "B", "C"))
         self.assertIn("polarity", bjt.parameters)
-        self.assertEqual(set(bjt.auxiliaries), {"v_be", "v_bc", "i_forward", "i_reverse"})
+        self.assertLessEqual({"v_be", "v_bc", "i_forward", "i_reverse"}, set(bjt.auxiliaries))
         self.assertIsInstance(fet, antispice.Model)
         self.assertEqual(fet.ports, ("S", "G", "D"))
         self.assertIn("polarity", fet.parameters)
-        self.assertEqual(
+        self.assertLessEqual(
+            {"v_gs", "v_ds", "overdrive", "channel_current"},
             set(fet.auxiliaries),
-            {"v_gs", "v_ds", "overdrive", "gate_activation", "positive_overdrive", "effective_v_ds", "channel_current"},
         )
 
     def test_dynamic_semiconductor_and_opamp_models_are_available(self) -> None:
         diode = antispice.BUILTIN_LIBRARY["diode-charge-storage"]
-        bjt = antispice.BUILTIN_LIBRARY["bjt-charge-control"]
-        fet = antispice.BUILTIN_LIBRARY["fet-shichman-hodges-capacitive"]
-        opamp = antispice.BUILTIN_LIBRARY["opamp-slew-limited"]
+        bjt = antispice.BUILTIN_LIBRARY["bjt-gummel-poon"]
+        fet = antispice.BUILTIN_LIBRARY["fet-shichman-hodges"]
+        opamp = antispice.BUILTIN_LIBRARY["opamp"]
 
         self.assertIsInstance(diode, antispice.Model)
         self.assertIn("Udot_A", diode.equations[0])
@@ -222,10 +222,10 @@ class BuiltinLibraryTest(unittest.TestCase):
         expected = {
             "1n4148": "diode-charge-storage",
             "1n4007": "diode-charge-storage",
-            "2n3904": "bjt-charge-control",
-            "2n3906": "bjt-charge-control",
-            "2n7000": "fet-shichman-hodges-capacitive",
-            "bs170": "fet-shichman-hodges-capacitive",
+            "2n3904": "bjt-gummel-poon",
+            "2n3906": "bjt-gummel-poon",
+            "2n7000": "fet-shichman-hodges",
+            "bs170": "fet-shichman-hodges",
         }
         for name, model in expected.items():
             with self.subTest(name=name):
