@@ -312,7 +312,7 @@ export class __CLASS_NAME__ {
 
   initializeOperatingPoint(time, options = {}) {
     const {
-      maxIterations = 50,
+      maxIterations = 100,
       residualTolerance = 1e-10,
       pivotTolerance = 1e-14,
       minimumStepMultiplier = 2 ** -20,

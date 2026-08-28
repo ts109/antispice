@@ -309,7 +309,7 @@ class PythonSolver:
         *,
         initial_state: Any | None = None,
         workspace: SolverWorkspace | None = None,
-        max_iterations: int = 50,
+        max_iterations: int = 100,
         residual_tolerance: float = 1e-10,
         minimum_step_multiplier: float = 2**-20,
         initial_trust_radius: float = 1.0,
