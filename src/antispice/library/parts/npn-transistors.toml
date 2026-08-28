@@ -1,3 +1,4 @@
+
 ["bcy59x"]
 model = "bjt-gummel-poon"
 
@@ -856,10 +857,10 @@ inverse_forward_early_voltage = 0.01
 inverse_reverse_early_voltage = 0
 inverse_forward_knee_current = 40
 inverse_reverse_knee_current = 0
-be_zero_bias_capacitance = 4.5e-09
+be_zero_bias_capacitance = 4.5e-12
 be_junction_potential = 0.75
 be_grading_coefficient = 0.33
-bc_zero_bias_capacitance = 3.5e-09
+bc_zero_bias_capacitance = 3.5e-12
 bc_junction_potential = 0.75
 bc_grading_coefficient = 0.33
 depletion_coefficient = 0.5
