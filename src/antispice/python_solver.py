@@ -103,6 +103,9 @@ class OperatingPointResult(_SignalAccess):
     time: float
     iterations: int
     residual_norm: float
+    trust_radius: float
+    trust_limited_steps: int
+    backtracks: int
 
     def _state_values(self) -> Any:
         return self.state
@@ -305,13 +308,26 @@ class PythonSolver:
         *,
         initial_state: Any | None = None,
         workspace: SolverWorkspace | None = None,
-        max_iterations: int = 20,
+        max_iterations: int = 50,
         residual_tolerance: float = 1e-10,
         minimum_step_multiplier: float = 2**-20,
+        initial_trust_radius: float = 0.25,
+        maximum_trust_radius: float = 1e6,
+        voltage_scale: float = 1.0,
+        current_scale: float = 1.0,
     ) -> OperatingPointResult:
         """Solve the stationary DAE using residual-backtracked Newton steps."""
         np = self.numpy
-        self._validate_operating_options(time, max_iterations, residual_tolerance, minimum_step_multiplier)
+        self._validate_operating_options(
+            time,
+            max_iterations,
+            residual_tolerance,
+            minimum_step_multiplier,
+            initial_trust_radius,
+            maximum_trust_radius,
+            voltage_scale,
+            current_scale,
+        )
         workspace = workspace or self.create_workspace()
         state = workspace.state
         if initial_state is None:
@@ -323,6 +339,14 @@ class PythonSolver:
                 raise ValueError(msg)
             state[:] = initial
         norm = math.inf
+        trust_radius = initial_trust_radius
+        trust_limited_steps = 0
+        backtracks = 0
+        scales = np.where(
+            np.arange(state.size) < len(self.layout.state.potentials),
+            voltage_scale,
+            current_scale,
+        )
         for iteration in range(max_iterations):
             self.kernels.stationary_evaluate(state, time, workspace.stationary_residual, workspace.stationary_jacobian)
             norm = float(np.max(np.abs(workspace.stationary_residual), initial=0))
@@ -330,15 +354,18 @@ class PythonSolver:
                 msg = f"operating-point residual is non-finite at t={time}"
                 raise RuntimeError(msg)
             if norm <= residual_tolerance:
-                return self._operating_result(workspace, time, iteration, norm)
+                return self._operating_result(workspace, time, iteration, norm, trust_radius, trust_limited_steps, backtracks)
             try:
                 correction = self.linear_solver.solve(workspace.stationary_jacobian, workspace.stationary_residual)
             except Exception as error:
                 msg = f"operating-point Jacobian is singular or ill-conditioned at t={time}"
                 raise RuntimeError(msg) from error
             previous = state.copy()
-            multiplier = 1.0
-            while multiplier >= minimum_step_multiplier:
+            correction_norm = float(np.linalg.norm(correction / scales))
+            trust_multiplier = min(1.0, trust_radius / correction_norm) if correction_norm else 1.0
+            trust_limited_steps += trust_multiplier < 1.0
+            multiplier = trust_multiplier
+            while multiplier >= trust_multiplier * minimum_step_multiplier:
                 state[:] = previous - multiplier * correction
                 self.kernels.stationary_evaluate(state, time, workspace.stationary_residual, workspace.stationary_jacobian)
                 candidate = float(np.max(np.abs(workspace.stationary_residual), initial=0))
@@ -346,12 +373,25 @@ class PythonSolver:
                     norm = candidate
                     break
                 multiplier *= 0.5
+                backtracks += 1
             else:
                 state[:] = previous
-                msg = f"operating-point backtracking failed at t={time} below step multiplier {minimum_step_multiplier}"
+                msg = f"operating-point backtracking failed at t={time} below relative step multiplier {minimum_step_multiplier}"
                 raise RuntimeError(msg)
+            if multiplier == trust_multiplier:
+                trust_radius = min(maximum_trust_radius, 2 * trust_radius)
+            else:
+                trust_radius = max(np.finfo(np.float64).eps, multiplier * correction_norm)
             if norm <= residual_tolerance:
-                return self._operating_result(workspace, time, iteration + 1, norm)
+                return self._operating_result(
+                    workspace,
+                    time,
+                    iteration + 1,
+                    norm,
+                    trust_radius,
+                    trust_limited_steps,
+                    backtracks,
+                )
         msg = f"operating-point Newton iteration did not converge at t={time} after {max_iterations} iterations (residual norm {norm})"
         raise RuntimeError(msg)
 
@@ -492,6 +532,10 @@ class PythonSolver:
         max_iterations: int,
         residual_tolerance: float,
         minimum_step_multiplier: float,
+        initial_trust_radius: float,
+        maximum_trust_radius: float,
+        voltage_scale: float,
+        current_scale: float,
     ) -> None:
         if not math.isfinite(time):
             msg = "operating-point time must be finite"
@@ -505,11 +549,42 @@ class PythonSolver:
         if not math.isfinite(minimum_step_multiplier) or not 0 < minimum_step_multiplier <= 1:
             msg = "minimum_step_multiplier must be finite and in (0, 1]"
             raise ValueError(msg)
+        if not math.isfinite(initial_trust_radius) or initial_trust_radius <= 0:
+            msg = "initial_trust_radius must be positive and finite"
+            raise ValueError(msg)
+        if not math.isfinite(maximum_trust_radius) or maximum_trust_radius < initial_trust_radius:
+            msg = "maximum_trust_radius must be finite and not smaller than initial_trust_radius"
+            raise ValueError(msg)
+        if not math.isfinite(voltage_scale) or voltage_scale <= 0:
+            msg = "voltage_scale must be positive and finite"
+            raise ValueError(msg)
+        if not math.isfinite(current_scale) or current_scale <= 0:
+            msg = "current_scale must be positive and finite"
+            raise ValueError(msg)
 
-    def _operating_result(self, workspace: SolverWorkspace, time: float, iterations: int, norm: float) -> OperatingPointResult:
+    def _operating_result(
+        self,
+        workspace: SolverWorkspace,
+        time: float,
+        iterations: int,
+        norm: float,
+        trust_radius: float,
+        trust_limited_steps: int,
+        backtracks: int,
+    ) -> OperatingPointResult:
         workspace.stage_derivatives.fill(0)
         auxiliaries = self._evaluate_auxiliaries(workspace, time).copy()
-        return OperatingPointResult(workspace.state.copy(), auxiliaries, self.layout, time, iterations, norm)
+        return OperatingPointResult(
+            workspace.state.copy(),
+            auxiliaries,
+            self.layout,
+            time,
+            iterations,
+            norm,
+            trust_radius,
+            trust_limited_steps,
+            backtracks,
+        )
 
     def _evaluate_auxiliaries(self, workspace: SolverWorkspace, time: float) -> Any:
         if self.kernels.evaluate_auxiliaries is not None:

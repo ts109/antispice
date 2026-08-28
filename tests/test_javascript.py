@@ -334,7 +334,16 @@ if (!first.converged || !second.converged) process.exit(1);
 import fs from "node:fs";
 import {AntispiceSolver} from "./wrapper.mjs";
 const solver = await AntispiceSolver.instantiate(fs.readFileSync("solver.wasm"));
-solver.initializeOperatingPoint(0, {residualTolerance: 1e-4});
+let failure;
+try {
+  solver.initializeOperatingPoint(0, {maxIterations: 1});
+} catch (error) {
+  failure = error.diagnostics;
+}
+if (failure?.status !== "failed" || failure?.reason !== "maximum-iterations" || failure?.iterations !== 1) process.exit(1);
+solver.reset();
+const operatingPoint = solver.initializeOperatingPoint(0);
+if (operatingPoint.status !== "converged" || operatingPoint.trustLimitedSteps < 1) process.exit(1);
 const result = solver.integrateArrays({startTime: 0, endTime: 0.01, stepSize: 1e-4, maxIterations: 20});
 if (result.sampleCount !== 101) process.exit(1);
 """

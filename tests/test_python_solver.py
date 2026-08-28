@@ -54,6 +54,20 @@ class PythonSolverTest(unittest.TestCase):
         self.assertAlmostEqual(result.potential("output")[-1], 1 - math.exp(-1), delta=1e-5)
         self.assertTrue(numpy.shares_memory(result.potential("output"), result.states))
 
+    def test_trust_radius_converges_difficult_bjt_operating_point(self) -> None:
+        circuit = antispice.Circuit(
+            elements={
+                "I1": antispice.Element("current-source", ("0", "bias"), {"current": 1e-3}),
+                "Q1": antispice.Element("2n3904", ("0", "bias", "bias")),
+            }
+        )
+
+        result = antispice.compile_python(circuit).operating_point()
+
+        self.assertLess(result.residual_norm, 1e-10)
+        self.assertGreater(result.trust_limited_steps, 0)
+        self.assertGreater(result.potential("bias"), 0.5)
+
     def test_adaptive_transient_ignores_algebraic_current_discontinuities(self) -> None:
         """A stepped source must not make algebraic branch currents control the timestep."""
         circuit = antispice.Circuit(

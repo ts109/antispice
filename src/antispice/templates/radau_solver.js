@@ -8,6 +8,14 @@ const AUXILIARY_INDICES = Object.freeze(__AUXILIARIES__);
 const AUXILIARY_COUNT = __AUXILIARY_COUNT__;
 const AC_CASES = Object.freeze(__AC_CASES__);
 const POTENTIAL_COUNT = Object.keys(POTENTIAL_INDICES).length;
+
+function convergenceError(message, diagnostics) {
+  const error = new Error(message);
+  error.name = "ConvergenceError";
+  error.code = "CONVERGENCE_FAILURE";
+  error.diagnostics = Object.freeze(diagnostics);
+  return error;
+}
 const OFFSETS = Object.freeze({
   stageDerivatives: __STAGE_DERIVATIVES__,
   state: __PREVIOUS_STATE__,
@@ -304,13 +312,21 @@ export class __CLASS_NAME__ {
 
   initializeOperatingPoint(time, options = {}) {
     const {
-      maxIterations = 20,
+      maxIterations = 50,
       residualTolerance = 1e-10,
       pivotTolerance = 1e-14,
       minimumStepMultiplier = 2 ** -20,
+      initialTrustRadius = 0.25,
+      maximumTrustRadius = 1e6,
+      voltageScale = 1,
+      currentScale = 1,
     } = options;
     if (!Number.isFinite(time)) throw new RangeError("Operating-point time must be finite");
     if (!Number.isFinite(residualTolerance) || !(residualTolerance > 0)) throw new RangeError("residualTolerance must be positive and finite");
+    if (!Number.isFinite(initialTrustRadius) || !(initialTrustRadius > 0)) throw new RangeError("initialTrustRadius must be positive and finite");
+    if (!Number.isFinite(maximumTrustRadius) || maximumTrustRadius < initialTrustRadius) throw new RangeError("maximumTrustRadius must be finite and not smaller than initialTrustRadius");
+    if (!Number.isFinite(voltageScale) || !(voltageScale > 0)) throw new RangeError("voltageScale must be positive and finite");
+    if (!Number.isFinite(currentScale) || !(currentScale > 0)) throw new RangeError("currentScale must be positive and finite");
     this._refreshViews();
     const residualNorm = () => {
       let norm = 0;
@@ -319,11 +335,28 @@ export class __CLASS_NAME__ {
       }
       return norm;
     };
+    let trustRadius = initialTrustRadius;
+    let trustLimitedSteps = 0;
+    let backtracks = 0;
+    const diagnostics = (status, reason, iterations, norm) => Object.freeze({
+      phase: "operating-point",
+      status,
+      reason,
+      time,
+      iterations,
+      residualNorm: norm,
+      trustRadius,
+      trustLimitedSteps,
+      backtracks,
+    });
+    const fail = (reason, message, iterations, norm) => {
+      throw convergenceError(message, diagnostics("failed", reason, iterations, norm));
+    };
     const finish = (iterations, norm) => {
       this.vectors.stageDerivatives.fill(0);
       this.vectors.updatedStageDerivatives.fill(0);
       this.vectors.nextState.set(this.vectors.state);
-      return {iterations, converged: true, residualNorm: norm};
+      return {...diagnostics("converged", null, iterations, norm), converged: true};
     };
     let norm = Infinity;
     let iterations = 0;
@@ -335,7 +368,7 @@ export class __CLASS_NAME__ {
         OFFSETS.jacobian,
       );
       norm = residualNorm();
-      if (!Number.isFinite(norm)) throw new Error(`Operating-point residual is non-finite at t=${time}`);
+      if (!Number.isFinite(norm)) fail("non-finite-residual", `Operating-point residual is non-finite at t=${time}`, iterations, norm);
       if (norm <= residualTolerance) return finish(iterations, norm);
       const status = this._linearSolve(
         OFFSETS.jacobian,
@@ -343,16 +376,24 @@ export class __CLASS_NAME__ {
         STATE_SIZE,
         pivotTolerance,
       );
-      if (status === 1) throw new Error(`Operating-point Jacobian is singular or ill-conditioned at t=${time}`);
-      if (status !== 0) throw new Error(`Operating-point Jacobian contains a non-finite pivot at t=${time}`);
+      if (status === 1) fail("singular-jacobian", `Operating-point Jacobian is singular or ill-conditioned at t=${time}`, iterations, norm);
+      if (status !== 0) fail("non-finite-jacobian", `Operating-point Jacobian contains a non-finite pivot at t=${time}`, iterations, norm);
 
       const previousState = this._operatingPreviousState;
       const correction = this._operatingCorrection;
       previousState.set(this.vectors.state);
       correction.set(this.vectors.residual.subarray(0, STATE_SIZE));
-      let multiplier = 1;
+      let correctionNorm = 0;
+      for (let index = 0; index < STATE_SIZE; ++index) {
+        const scale = index < POTENTIAL_COUNT ? voltageScale : currentScale;
+        correctionNorm += (correction[index] / scale) ** 2;
+      }
+      correctionNorm = Math.sqrt(correctionNorm);
+      const trustMultiplier = correctionNorm > trustRadius ? trustRadius / correctionNorm : 1;
+      if (trustMultiplier < 1) ++trustLimitedSteps;
+      let multiplier = trustMultiplier;
       let improved = false;
-      while (multiplier >= minimumStepMultiplier) {
+      while (multiplier >= trustMultiplier * minimumStepMultiplier) {
         for (let index = 0; index < STATE_SIZE; ++index) {
           this.vectors.state[index] = previousState[index] - multiplier * correction[index];
         }
@@ -369,14 +410,20 @@ export class __CLASS_NAME__ {
           break;
         }
         multiplier *= 0.5;
+        ++backtracks;
       }
       if (!improved) {
         this.vectors.state.set(previousState);
-        throw new Error(`Operating-point backtracking failed at t=${time} below step multiplier ${minimumStepMultiplier}`);
+        fail("backtracking-failed", `Operating-point backtracking failed at t=${time} below relative step multiplier ${minimumStepMultiplier}`, iterations + 1, norm);
+      }
+      if (multiplier === trustMultiplier) {
+        trustRadius = Math.min(maximumTrustRadius, 2 * trustRadius);
+      } else {
+        trustRadius = Math.max(Number.EPSILON, multiplier * correctionNorm);
       }
       if (norm <= residualTolerance) return finish(iterations + 1, norm);
     }
-    throw new Error(`Operating-point Newton iteration did not converge at t=${time} after ${iterations} iterations (residual norm ${norm})`);
+    fail("maximum-iterations", `Operating-point Newton iteration did not converge at t=${time} after ${iterations} iterations (residual norm ${norm})`, iterations, norm);
   }
 
   newtonIteration(time, stepSize, pivotTolerance = 1e-14, residualTolerance = 1e-10, minimumStepMultiplier = 2 ** -20) {
@@ -517,10 +564,30 @@ export class __CLASS_NAME__ {
       if (converged) break;
     }
     if (failure) {
-      throw new Error(`Transient solve failed at t=${time + stepSize}: ${failure.message}`, {cause: failure});
+      throw convergenceError(
+        `Transient solve failed at t=${time + stepSize}: ${failure.message}`,
+        {
+          phase: "transient",
+          status: "failed",
+          reason: "newton-step-failed",
+          time: time + stepSize,
+          iterations,
+          residualNorm,
+        },
+      );
     }
     if (!converged && requireConvergence) {
-      throw new Error(`Newton iteration did not converge at t=${time + stepSize} after ${iterations} iterations (residual norm ${residualNorm})`);
+      throw convergenceError(
+        `Newton iteration did not converge at t=${time + stepSize} after ${iterations} iterations (residual norm ${residualNorm})`,
+        {
+          phase: "transient",
+          status: "failed",
+          reason: "maximum-iterations",
+          time: time + stepSize,
+          iterations,
+          residualNorm,
+        },
+      );
     }
     this.vectors.state.set(this.vectors.nextState);
     return {time: time + stepSize, iterations, converged, error, scale};
@@ -632,7 +699,17 @@ export class __CLASS_NAME__ {
         const nextStep = Math.max(minimumStepSize, result.suggestedStep);
         if (trialStep <= minimumStepSize * (1 + 16 * Number.EPSILON) || remaining < minimumStepSize) {
           const reason = result.failure ? `: ${result.failure.message}` : ` (estimated error ${result.errorNorm})`;
-          throw new Error(`Adaptive integration failed at t=${time}; minimum step size ${minimumStepSize} is insufficient${reason}`, {cause: result.failure ?? undefined});
+          throw convergenceError(
+            `Adaptive integration failed at t=${time}; minimum step size ${minimumStepSize} is insufficient${reason}`,
+            result.failure?.diagnostics ?? {
+              phase: "transient",
+              status: "failed",
+              reason: "minimum-step-size",
+              time,
+              errorNorm: result.errorNorm,
+              rejectedSteps,
+            },
+          );
         }
         stepSize = nextStep;
         continue;
