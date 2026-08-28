@@ -106,6 +106,7 @@ class OperatingPointResult(_SignalAccess):
     trust_radius: float
     trust_limited_steps: int
     backtracks: int
+    agreement_ratio: float | None
 
     def _state_values(self) -> Any:
         return self.state
@@ -311,7 +312,7 @@ class PythonSolver:
         max_iterations: int = 50,
         residual_tolerance: float = 1e-10,
         minimum_step_multiplier: float = 2**-20,
-        initial_trust_radius: float = 0.25,
+        initial_trust_radius: float = 1.0,
         maximum_trust_radius: float = 1e6,
         voltage_scale: float = 1.0,
         current_scale: float = 1.0,
@@ -342,6 +343,7 @@ class PythonSolver:
         trust_radius = initial_trust_radius
         trust_limited_steps = 0
         backtracks = 0
+        agreement_ratio = None
         scales = np.where(
             np.arange(state.size) < len(self.layout.state.potentials),
             voltage_scale,
@@ -354,7 +356,16 @@ class PythonSolver:
                 msg = f"operating-point residual is non-finite at t={time}"
                 raise RuntimeError(msg)
             if norm <= residual_tolerance:
-                return self._operating_result(workspace, time, iteration, norm, trust_radius, trust_limited_steps, backtracks)
+                return self._operating_result(
+                    workspace,
+                    time,
+                    iteration,
+                    norm,
+                    trust_radius,
+                    trust_limited_steps,
+                    backtracks,
+                    agreement_ratio,
+                )
             try:
                 correction = self.linear_solver.solve(workspace.stationary_jacobian, workspace.stationary_residual)
             except Exception as error:
@@ -364,6 +375,7 @@ class PythonSolver:
             correction_norm = float(np.linalg.norm(correction / scales))
             trust_multiplier = min(1.0, trust_radius / correction_norm) if correction_norm else 1.0
             trust_limited_steps += trust_multiplier < 1.0
+            previous_norm = norm
             multiplier = trust_multiplier
             while multiplier >= trust_multiplier * minimum_step_multiplier:
                 state[:] = previous - multiplier * correction
@@ -378,10 +390,14 @@ class PythonSolver:
                 state[:] = previous
                 msg = f"operating-point backtracking failed at t={time} below relative step multiplier {minimum_step_multiplier}"
                 raise RuntimeError(msg)
-            if multiplier == trust_multiplier:
+            predicted_reduction = multiplier * previous_norm
+            agreement_ratio = (previous_norm - norm) / predicted_reduction if predicted_reduction > 0 else 0.0
+            boundary_step = trust_multiplier < 1.0 and multiplier == trust_multiplier
+            step_norm = multiplier * correction_norm
+            if agreement_ratio < 0.25:
+                trust_radius = max(np.finfo(np.float64).eps, 0.25 * step_norm)
+            elif agreement_ratio > 0.75 and boundary_step:
                 trust_radius = min(maximum_trust_radius, 2 * trust_radius)
-            else:
-                trust_radius = max(np.finfo(np.float64).eps, multiplier * correction_norm)
             if norm <= residual_tolerance:
                 return self._operating_result(
                     workspace,
@@ -391,6 +407,7 @@ class PythonSolver:
                     trust_radius,
                     trust_limited_steps,
                     backtracks,
+                    agreement_ratio,
                 )
         msg = f"operating-point Newton iteration did not converge at t={time} after {max_iterations} iterations (residual norm {norm})"
         raise RuntimeError(msg)
@@ -571,6 +588,7 @@ class PythonSolver:
         trust_radius: float,
         trust_limited_steps: int,
         backtracks: int,
+        agreement_ratio: float | None,
     ) -> OperatingPointResult:
         workspace.stage_derivatives.fill(0)
         auxiliaries = self._evaluate_auxiliaries(workspace, time).copy()
@@ -584,6 +602,7 @@ class PythonSolver:
             trust_radius,
             trust_limited_steps,
             backtracks,
+            agreement_ratio,
         )
 
     def _evaluate_auxiliaries(self, workspace: SolverWorkspace, time: float) -> Any:

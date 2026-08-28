@@ -92,6 +92,9 @@ class JavaScriptWrapperTest(unittest.TestCase):
         self.assertIn("multiplier *= 0.5", wrapper)
         self.assertIn("minimumStepMultiplier = 2 ** -20", wrapper)
         self.assertIn("Operating-point backtracking failed", wrapper)
+        self.assertIn("const predictedReduction = multiplier * previousNorm", wrapper)
+        self.assertIn("agreementRatio < 0.25", wrapper)
+        self.assertIn("agreementRatio > 0.75 && boundaryStep", wrapper)
 
     def test_transient_newton_skips_solved_residuals(self) -> None:
         """A stationary circuit does not factor an unnecessary Radau Jacobian."""

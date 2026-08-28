@@ -316,7 +316,7 @@ export class __CLASS_NAME__ {
       residualTolerance = 1e-10,
       pivotTolerance = 1e-14,
       minimumStepMultiplier = 2 ** -20,
-      initialTrustRadius = 0.25,
+      initialTrustRadius = 1,
       maximumTrustRadius = 1e6,
       voltageScale = 1,
       currentScale = 1,
@@ -338,6 +338,7 @@ export class __CLASS_NAME__ {
     let trustRadius = initialTrustRadius;
     let trustLimitedSteps = 0;
     let backtracks = 0;
+    let agreementRatio = null;
     const diagnostics = (status, reason, iterations, norm) => Object.freeze({
       phase: "operating-point",
       status,
@@ -348,6 +349,7 @@ export class __CLASS_NAME__ {
       trustRadius,
       trustLimitedSteps,
       backtracks,
+      agreementRatio,
     });
     const fail = (reason, message, iterations, norm) => {
       throw convergenceError(message, diagnostics("failed", reason, iterations, norm));
@@ -391,6 +393,7 @@ export class __CLASS_NAME__ {
       correctionNorm = Math.sqrt(correctionNorm);
       const trustMultiplier = correctionNorm > trustRadius ? trustRadius / correctionNorm : 1;
       if (trustMultiplier < 1) ++trustLimitedSteps;
+      const previousNorm = norm;
       let multiplier = trustMultiplier;
       let improved = false;
       while (multiplier >= trustMultiplier * minimumStepMultiplier) {
@@ -416,10 +419,14 @@ export class __CLASS_NAME__ {
         this.vectors.state.set(previousState);
         fail("backtracking-failed", `Operating-point backtracking failed at t=${time} below relative step multiplier ${minimumStepMultiplier}`, iterations + 1, norm);
       }
-      if (multiplier === trustMultiplier) {
+      const predictedReduction = multiplier * previousNorm;
+      agreementRatio = predictedReduction > 0 ? (previousNorm - norm) / predictedReduction : 0;
+      const boundaryStep = trustMultiplier < 1 && multiplier === trustMultiplier;
+      const stepNorm = multiplier * correctionNorm;
+      if (agreementRatio < 0.25) {
+        trustRadius = Math.max(Number.EPSILON, 0.25 * stepNorm);
+      } else if (agreementRatio > 0.75 && boundaryStep) {
         trustRadius = Math.min(maximumTrustRadius, 2 * trustRadius);
-      } else {
-        trustRadius = Math.max(Number.EPSILON, multiplier * correctionNorm);
       }
       if (norm <= residualTolerance) return finish(iterations + 1, norm);
     }

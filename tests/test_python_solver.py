@@ -68,6 +68,25 @@ class PythonSolverTest(unittest.TestCase):
         self.assertGreater(result.trust_limited_steps, 0)
         self.assertGreater(result.potential("bias"), 0.5)
 
+    def test_trust_agreement_converges_common_emitter_bias(self) -> None:
+        circuit = antispice.Circuit(
+            elements={
+                "V1": antispice.Element("voltage-source", ("0", "VCC"), {"voltage": 12}),
+                "I1": antispice.Element("current-source", ("VCC", "BIAS"), {"current": 15e-6}),
+                "C1": antispice.Element("capacitor", ("BIAS", "0"), {"capacitance": 10e-6}),
+                "R1": antispice.Element("resistor", ("BIAS", "IN"), {"resistance": 10e3}),
+                "R2": antispice.Element("resistor", ("VCC", "OUT"), {"resistance": 3.3e3}),
+                "Q1": antispice.Element("2n3904", ("0", "IN", "OUT")),
+            }
+        )
+
+        result = antispice.compile_python(circuit).operating_point()
+
+        self.assertLess(result.residual_norm, 1e-10)
+        self.assertAlmostEqual(result.potential("IN"), 0.66424653, delta=1e-6)
+        self.assertAlmostEqual(result.potential("OUT"), 5.49365657, delta=1e-6)
+        self.assertIsNotNone(result.agreement_ratio)
+
     def test_adaptive_transient_ignores_algebraic_current_discontinuities(self) -> None:
         """A stepped source must not make algebraic branch currents control the timestep."""
         circuit = antispice.Circuit(
