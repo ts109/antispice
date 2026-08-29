@@ -6,6 +6,9 @@ browser. The core package deliberately contains no schematic editor, graphical
 symbols, or plotting code; those belong to applications such as
 [antispice-web](https://github.com/ts109/antispice-web).
 
+ANTISPICE-WEB is hosted [here](https://antispice.top) - it's free of charge,
+requires no sign-up, and does not track your identity or collect any data.
+
 Antispice is intended for experimenting with circuit models and simulation
 methods without requiring every model to conform to a large, fixed SPICE
 vocabulary. Models are equations, parts bind model parameters, and elements
